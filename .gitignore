@@ -21,4 +21,5 @@ track.py
 **.pt
 **.state
 .github/workflows/**
-
+logs/
+results/
