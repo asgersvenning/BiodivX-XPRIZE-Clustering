@@ -79,7 +79,26 @@ if [ ! "$(pip show torch)" ]; then
     fi
 else
     echo "torch already installed. Skipping installation."
+fi
 
+# Install transformers
+if [ ! "$(pip show transformers)" ]; then
+    if ! micromamba install transformers -c conda-forge; then
+        echo "Failed to install transformers."
+        handle_error
+    fi
+else
+    echo "transformers already installed. Skipping installation."
+fi
+
+# Install python utils
+if [ ! "$(pip show numpy)" ]; then
+    if ! micromamba install numpy scipy tqdm scikit-learn zipfile -c conda-forge; then
+        echo "Failed to install numpy and co."
+        handle_error
+    fi
+else
+    echo "Numpy and co already installed. Skipping installation."
 fi
 
 # Return to the original directory
