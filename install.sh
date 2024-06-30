@@ -17,7 +17,7 @@ handle_error() {
 
 # This script is designed to be run on a fresh Ubuntu 22.04 installation with CUDA 12.2 and NVIDIA driver version 535.161.07.
 # Static installation options
-ENV_NAME="xprize_pipeline"
+ENV_NAME="xprize_clustering"
 REQUIRED_PYTHON_VERSION="3.11.5"
 UBUNTU_VERSION="22.04"
 CUDA_VERSION="12.2"
@@ -91,21 +91,28 @@ else
     echo "transformers already installed. Skipping installation."
 fi
 
-# Install python utils
-if [ ! "$(pip show numpy)" ]; then
-    if ! micromamba install numpy scipy tqdm scikit-learn zipfile -c conda-forge; then
-        echo "Failed to install numpy and co."
+# Install scipy
+if [ ! "$(pip show scipy)" ]; then
+    if ! micromamba install scipy -c conda-forge; then
+        echo "Failed to install scipy."
         handle_error
     fi
 else
-    echo "Numpy and co already installed. Skipping installation."
+    echo "scipy already installed. Skipping installation."
+fi
+
+# Install scikit-learn
+if [ ! "$(pip show scikit-learn)" ]; then
+    if ! micromamba install scikit-learn -c conda-forge; then
+        echo "Failed to install scikit-learn."
+        handle_error
+    fi
+else
+    echo "scikit-learn already installed. Skipping installation."
 fi
 
 # Return to the original directory
 cd "$CWD"
-
-# Install the Tracking/Clustering, Classification &  Localization submodules
-. "$CWD"/sync_submodules.sh
 
 # Deactivate the environment to restore the original environment
 micromamba deactivate
@@ -116,13 +123,9 @@ echo ""
 
 # Print instructions
 echo "INSTRUCTIONS:"
-echo "  Please activate the environment before running the pipeline:"
+echo "  Please activate the environment before running clustering:"
 echo "      'micromamba activate $ENV_NAME' "
 echo "  You can deactivate the environment with:"
 echo "      'micromamba deactivate'"
 echo "  You can remove the environment with:"
 echo "      'micromamba env remove -n $ENV_NAME'"
-echo "  Run the pipeline:"
-echo "      'python pipeline.py -i [<INPUT_IMAGES> ...] [-o <OUT_FOLDER>]'"
-echo "  Start the web interface:"
-echo "      'gradio app.py'"

@@ -959,9 +959,9 @@ def main(args : Dict):
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description="Embedding and clustering computation.")
-    parser.add_argument("-i", "--in_folder", type=str, 
+    parser.add_argument("-i", "--in_folder", type=str, required=True,
         help="Input folder with the image crops.")
-    parser.add_argument("-m", "--model_path", type=str, default=None,
+    parser.add_argument("-m", "--model_path", type=str, default=None, required=True,
         help="(Optional) Model path for the embedding. If not found locally, a default model will be downloaded.") 
     parser.add_argument("-o", "--out_folder", type=str, default=None,
         help="(Optional) Output folder for the clustered images.")
