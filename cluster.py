@@ -1,64 +1,29 @@
-from abc import abstractmethod
-import os
-import re
-import logging 
-import sys 
-import json
-import pickle
-from datetime import datetime
-import argparse
-from pathlib import Path
-import numpy as np
-from PIL import Image
-from pathlib import Path
-from tqdm import tqdm
-import zipfile
-import glob
+import os, re, glob, shutil, json, csv, zipfile, pickle, argparse
 
+from typing import Callable, List, Tuple, Dict, Optional, Any
+
+from abc import abstractmethod
+from datetime import datetime
+from pathlib import Path
+
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import Pool
+
+from statistics import mode
+from tqdm import tqdm
+from PIL import Image
+
+import numpy as np
 import torch
+
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoImageProcessor, AutoModel
 
-import csv 
-import shutil
-from statistics import mode
-from concurrent.futures import ThreadPoolExecutor
-from multiprocessing import Pool
-from typing import Callable, List, Tuple
 from scipy.spatial.distance import pdist, squareform
 from sklearn.metrics.pairwise import cosine_similarity
 
 ERDA_MODEL_ZOO_TEMPLATE = "https://anon.erda.au.dk/share_redirect/aRbj0NCBkf/{}"
 
-#----------------------------------------------------------------------------
-# logger.info to file
-
-logger = logging.getLogger(__name__)
-
-def set_logger(suffix=""):
-    """Helper function to set up the logging process.
-
-    Parameters
-    ----------
-    suffix : str, default=""
-        Suffix to add in the end of the file name.
-    """
-    log_name = datetime.now().strftime("%Y%m%d-%H%M%S") + suffix + ".log"
-
-    os.makedirs("logs", exist_ok=True)
-    file_handler = logging.FileHandler(filename=os.path.join("logs", log_name))
-    stdout_handler = logging.StreamHandler(stream=sys.stdout)
-    handlers = [file_handler, stdout_handler]
-
-    logging.basicConfig(
-        format='%(asctime)s: %(levelname)s: %(filename)s: %(message)s',
-        encoding='utf-8', 
-        level=logging.DEBUG,
-        handlers=handlers
-        )
-
-# To prevent PIL log overflow
-logging.getLogger('PIL').setLevel(logging.INFO)
 
 #----------------------------------------------------------------------------
 # Embedding base class
@@ -119,8 +84,7 @@ class Embedding:
         elif type(self.embs) == list:
             embs = self.embs
         else:
-            logger.error("Wrong type of embeddings: {}".format(type(self.embs)))
-            raise TypeError
+            raise TypeError("Wrong type of embeddings: {}".format(type(self.embs)))
         
         out_dict["embedding"] = embs
 
@@ -141,7 +105,7 @@ class Embedding:
             with open(out_file, 'w', encoding='utf-8') as f:
                 json.dump(out_dict, f, ensure_ascii=False, indent=4)
         
-        logger.info("Embeddings saved in {}.".format(out_file))
+        print("Embeddings saved in {}.".format(out_file))
 
     @abstractmethod
     def compute(self):
@@ -187,10 +151,10 @@ class HFEmbedding(Embedding):
             n_workers: int = 12,
             ):
         
-        logger.info("Starting embedding computation with HuggingFace model {}.".format(self.from_pretrained))
+        print("Starting embedding computation with HuggingFace model {}.".format(self.from_pretrained))
         
         # Load data from folder
-        logger.info("Loading data from input folder.")
+        print("Loading data from input folder.")
 
 
         dataloader = DataLoader(
@@ -202,13 +166,13 @@ class HFEmbedding(Embedding):
         )
 
         # Load model
-        logger.info("Loading model.")
+        print("Loading model.")
         
         self.model.to(self.device)
         self.model.eval()
 
         # Compute embeddings
-        logger.info("Computing embeddings.")
+        print("Computing embeddings.")
 
         all_embeddings = []
         with torch.no_grad():
@@ -218,7 +182,7 @@ class HFEmbedding(Embedding):
                 all_embeddings.append(self.model(pixel_values=images).pooler_output.squeeze().detach().cpu())
 
         all_embeddings = torch.cat(all_embeddings).numpy()
-        logger.info("Embeddings: {}".format(all_embeddings.shape))
+        print("Embeddings: {}".format(all_embeddings.shape))
 
         self.embs = list(all_embeddings)
 
@@ -286,18 +250,16 @@ def get_crop_features(crop_path: str, meta_folder : str, meta_filenames: list):
     elif "crop" in crop_path_split:
         image_name = crop_path_split[crop_path_split.index("crop")+1]
     else:
-        logger.error("Crop path {} not properly formated.'IMAGENAME_' or 'crop_ must be present.".format(crop_path))
-        raise RuntimeError
+        raise RuntimeError("Crop path {} not properly formated.'IMAGENAME_' or 'crop_ must be present.".format(crop_path))
 
     if not "CROPNUMBER" in crop_path_split:
-        logger.error("Crop path {} not properly formated.'CROPNUMBER' must be present.".format(crop_path))
-        raise RuntimeError
+        raise RuntimeError("Crop path {} not properly formated.'CROPNUMBER' must be present.".format(crop_path))
     crop_number = int(crop_path_split[crop_path_split.index("CROPNUMBER")+1])
 
     # Find the appropriate metadata file
     crop_meta_file = [file for file in meta_filenames if image_name in file]
     if len(crop_meta_file) == 0:
-        logger.warning("Metadata not found for crop {}. Center will not be included.".format(crop_path))
+        print("Metadata not found for crop {}. Center will not be included.".format(crop_path))
         # return [image_number], image_date, [0, 0]
         return {"number": image_number, "date": image_date, "center": [0., 0]}
         # return [[0, 0]]
@@ -312,8 +274,7 @@ def get_crop_features(crop_path: str, meta_folder : str, meta_filenames: list):
 
     # Compute the center of the bounding box
     if len(crop_bbox) != 4:
-        logger.error("Wrong bounding box dimensions: {}".format(crop_bbox))
-        raise RuntimeError
+        raise RuntimeError("Wrong bounding box dimensions: {}".format(crop_bbox))
     else:
         x1, y1, x2, y2 = crop_bbox
         center = [x1 + (x2-x1)/2, y1 + (y2-y1)/2]
@@ -378,10 +339,9 @@ class Clustering:
         # Load features from metadata
         if self.filenames is not None and self.meta_folder is not None and os.path.exists(self.meta_folder):
             if self.in_folder is None:
-                logger.error("If metadata extraction is intended, the input folder must be precised. Please set `in_folder` argument.")
-                raise ValueError
+                raise ValueError("If metadata extraction is intended, the input folder must be precised. Please set `in_folder` argument.")
 
-            logger.info("Found metadata folder. Attempting to load crops' features from metadata.")
+            print("Found metadata folder. Attempting to load crops' features from metadata.")
             self.meta_filenames = [f for f in os.listdir(meta_folder) if Path(f).suffix.lower()==".json"]
             self.load_features()
         if add_features:
@@ -401,10 +361,9 @@ class Clustering:
             with open(self.embs_file) as f:
                 embs_dict = json.load(f)
         else:
-            logger.error("Wrong file format: {}".format(path.suffix))
-            raise TypeError
+            raise TypeError("Wrong file format: {}".format(path.suffix))
         
-        logger.info("Opened embedding file {}. Avaliable keys {}.".format(self.embs_file, embs_dict.keys()))
+        print("Opened embedding file {}. Avaliable keys {}.".format(self.embs_file, embs_dict.keys()))
 
         self.embs = np.array(embs_dict.get("embedding"))
 
@@ -414,7 +373,7 @@ class Clustering:
         if "filename" in embs_dict.keys():
             self.filenames = embs_dict.get("filename")
         else:
-            logger.warning("Filenames not found in the emdedding file. This may cause issue during cluster saving.")
+            print("Filenames not found in the emdedding file. This may cause issue during cluster saving.")
 
     def load_features(self) -> None:
         self.features = [get_crop_features(
@@ -463,7 +422,7 @@ class Clustering:
 
         # Store filenames
         if self.filenames is None:
-            logger.warning("Filenames not found while saving.")
+            print("Filenames not found while saving.")
         out_dict = {"filename": self.filenames}
 
         # Optionally store the embdeddings
@@ -473,8 +432,7 @@ class Clustering:
             elif type(self.embs) == list:
                 embs = self.embs
             else:
-                logger.error("Wrong type of embeddings: {}".format(type(self.embs)))
-                raise TypeError
+                raise TypeError("Wrong type of embeddings: {}".format(type(self.embs)))
             
             out_dict["embedding"] = embs
         
@@ -482,7 +440,7 @@ class Clustering:
         if type(self.clusters) == np.ndarray:
             self.clusters = self.clusters.tolist()
         if self.clusters is None:
-            logger.warning("No cluster found while saving.")
+            print("No cluster found while saving.")
         else:
             out_dict["cluster"] = self.clusters 
 
@@ -504,7 +462,7 @@ class Clustering:
 
         # CSV format
         elif out_path.suffix == ".csv":
-            logger.info("Saving cluster in CSV format, the embedding will be ignored.")
+            print("Saving cluster in CSV format, the embedding will be ignored.")
             with open(out_file, 'w', newline='') as f_output:
                 csv_output = csv.writer(f_output)
 
@@ -514,7 +472,7 @@ class Clustering:
                 csv_output.writerow(n_out_dict.keys())
                 csv_output.writerows([*zip(*n_out_dict.values())])
 
-        logger.info("Clusters saved in {}.".format(out_file))
+        print("Clusters saved in {}.".format(out_file))
 
     @abstractmethod
     def compute(self):
@@ -571,14 +529,14 @@ def deduplicate(in_folder: str, clusters_file: str, out_folder: str):
         Folder where the clustered images will be stored.
     """
 
-    logger.info("Copying files to output folders.")
+    print("Copying files to output folders.")
     clusters_dict = load_clusters(clusters_file=clusters_file)
     clusters = clusters_dict["cluster"]
     filenames = clusters_dict["filename"]
 
     # Make the output root folder
     if not os.path.exists(out_folder):
-        logger.info("Output folder not found. Creating it.")
+        print("Output folder not found. Creating it.")
         os.makedirs(out_folder, exist_ok=True)
 
     # Make the outliers subfolder 
@@ -617,14 +575,14 @@ def gen_cluster_subfolders(in_folder: str, clusters_file: str, out_folder: str):
     out_folder : str
         Folder where the clustered images will be stored.
     """
-    logger.info("Copying files to output folders.")
+    print("Copying files to output folders.")
     clusters_dict = load_clusters(clusters_file=clusters_file)
     clusters = clusters_dict["cluster"]
     filenames = clusters_dict["filename"]
 
     # Make the output root folder
     if not os.path.exists(out_folder):
-        logger.info("Output folder not found. Creating it.")
+        print("Output folder not found. Creating it.")
         os.makedirs(out_folder, exist_ok=True)
 
     # if an image is associated with a unique cluster number, then the cluster number is set to -1
@@ -721,10 +679,10 @@ def compute_transitive_closure(adjacency_matrix : torch.Tensor) -> torch.Tensor:
         return adjacency_matrix    
     # There can be a quite significant difference in performance between the CPU and GPU implementation, however this function is not the bottleneck, so it might not be noticeable in practice
     if adjacency_matrix.is_cuda:
-        logger.info("CUDA")
+        print("CUDA")
         return _compute_transitive_closure_cuda(adjacency_matrix)
     else:
-        logger.info("CPU")
+        print("CPU")
         return _compute_transitive_closure_cpu(adjacency_matrix)
 
 # Cosine similarity function copied from https://github.com/idealo/imagededup/blob/master/imagededup/methods/cnn.py
@@ -754,7 +712,7 @@ def get_cosine_similarity(
         return cosine_similarity(X)
 
     else:
-        logger.info(
+        print(
             'Large feature matrix thus calculating cosine similarities in chunks...'
         )
         start_idxs = list(range(0, n_rows, chunk_size))
@@ -778,8 +736,8 @@ class CosineClustering(Clustering):
     """Good and fast.
     """
     def compute(self, threshold: float = 0.8):
-        logger.info("Starting clustering with cosine similarity algorithm with threshold {}".format(threshold))
-        logger.info("Computing cosine similarity matrix.")
+        print("Starting clustering with cosine similarity algorithm with threshold {}".format(threshold))
+        print("Computing cosine similarity matrix.")
         # cosine = get_cosine_similarity(self.embs, num_workers=cpu_count())
 
         embs = torch.from_numpy(self.embs).to(self.device)
@@ -814,11 +772,11 @@ class CosineClustering(Clustering):
         is_connected = (cosine >= threshold) 
         del cosine
 
-        logger.info("Computing transitive closure")
+        print("Computing transitive closure")
         self.clusters = np.zeros(len(self.embs), dtype=np.int32)
         is_connected = compute_transitive_closure(is_connected)
 
-        logger.info("Computing clusters.")
+        print("Computing clusters.")
         for node in tqdm(range(len(self.clusters))):
             if self.clusters[node]:
                 continue
@@ -843,7 +801,7 @@ def run_embed(
     """
 
     if not os.path.exists(out_folder):
-        logger.info("Output folder for embeddings not found. Creating it.")
+        print("Output folder for embeddings not found. Creating it.")
         os.makedirs(out_folder, exist_ok=True)
 
     # Create an unique output filename with the date and time, plus the method name
@@ -883,7 +841,7 @@ def run_cluster(
     """
 
     if not os.path.exists(out_folder):
-        logger.info("Output folder for clustering results not found. Creating it.")
+        print("Output folder for clustering results not found. Creating it.")
         os.makedirs(out_folder, exist_ok=True)
 
     # Create an unique output filename with the date and time, plus the method name
@@ -901,22 +859,105 @@ def run_cluster(
     
     cluster.compute() if threshold is None else cluster.compute(threshold)
     if num_classes is not None and cluster.labels is not None:
-        logger.info("Found cluster labels. Evaluating.")
+        print("Found cluster labels. Evaluating.")
         cluster.eval()
     cluster.save(
         out_file, 
         save_embs = save_embs,
         save_labels = save_labels)
     
-    logger.info("Clustering done. Clusters can be found in {}.".format(out_file))
+    print("Clustering done. Clusters can be found in {}.".format(out_file))
 
     # Return the output file
     return out_file
 
 
-def main():
-    """Run the embedding and the clustering algorithm. Skip flat-bug prediction.
-    """
+def main(args : Dict):
+    in_folder = args["in_folder"]
+    model_path = args["model_path"]
+    out_folder = args.get("out_folder", None)
+    device = args.get("device", "cpu")
+    embed = args.get("embed", "dino")
+    from_pretrained = args.get("from_pretrained", None)
+    cluster = args.get("cluster", "cosine")
+    num_classes = args.get("num_classes", None)
+    save_embs = args.get("save_embs", False)
+    save_labels = args.get("save_labels", False)
+    meta_folder = args.get("meta_folder", None)
+    intermediate_folder = args.get("inter_folder", "results/")
+    threshold = args.get("threshold", None)
+    dedup = args.get("dedup", False)
+
+
+    # If in_folder is a zip, then unzip it
+    if os.path.isdir(in_folder):
+        pass
+    elif in_folder.endswith(".zip"):
+        in_folder = Path(in_folder)
+        ext = in_folder.suffix
+        if ext == ".zip":
+            # Create unzipping folder
+            unzip_folder = os.path.join(in_folder.parent, in_folder.stem)
+
+            print("Found zip file as input. Unzipping it in {}.".format(unzip_folder))
+            with zipfile.ZipFile(in_folder, 'r') as zip_ref:
+                zip_ref.extractall(unzip_folder)
+
+            # Check if the zip file did not contain another folder
+            in_subfolder = list(set([os.path.dirname(p) for p in glob.glob(os.path.join(unzip_folder,"*/*"))]))
+            if len(in_subfolder) == 1:
+                print("Found one subfolder in zip file {}. Will use it as image folder".format(in_subfolder))
+                in_folder = in_subfolder[0]
+            elif len(in_subfolder) > 1:
+                print("Too many subfolders in zip file: {}".format(in_subfolder))
+                return
+            else:
+                in_folder = unzip_folder
+        else:
+            print("Wrong zip format. Found {} instead of zip.".format(ext))
+            raise TypeError	
+    else:
+        raise FileNotFoundError("Input folder not found: {}".format(in_folder))
+
+    # Compute the embeddings
+    embs_file = run_embed(
+        method = VALID_NAMES_EMBED[embed],
+        in_folder = in_folder,
+        out_folder = intermediate_folder,
+        model_path = model_path,
+        device = device,
+        from_pretrained = from_pretrained,
+    )
+
+    # Compute the clusters
+    clusters_file = run_cluster(
+        method = VALID_NAMES_CLUSTER[cluster],
+        embs_file = embs_file,
+        in_folder = in_folder,
+        meta_folder = meta_folder,
+        out_folder = intermediate_folder,
+        num_classes = num_classes,
+        save_embs = save_embs,
+        save_labels = save_labels,
+        device = device,
+        threshold = threshold
+    )
+
+    # If not precised, the output folder will have the same name as the input folder with an additional '_clustered' suffix.
+    if out_folder is None:
+        out_folder = str(Path(in_folder)) + "_clustered"
+
+    # Generate the subfolders
+    out_function = deduplicate if dedup else gen_cluster_subfolders
+    out_function(
+        in_folder = in_folder,
+        clusters_file = clusters_file,
+        out_folder = out_folder,
+    )
+
+    print("Image crops successfully clustered in {}".format(out_folder))
+
+if __name__=='__main__':
     parser = argparse.ArgumentParser(description="Embedding and clustering computation.")
     parser.add_argument("-i", "--in_folder", type=str, 
         help="Input folder with the image crops.")
@@ -948,70 +989,4 @@ def main():
         help="(Optional) Threshold for the cosine similarity clustering.")
     args = parser.parse_args()
 
-    set_logger("_embed_cluster")
-
-    # If in_folder is a zip, then unzip it
-    if not os.path.isdir(args.in_folder):
-        in_folder = Path(args.in_folder)
-        ext = in_folder.suffix
-        if ext == ".zip":
-            # Create unzipping folder
-            unzip_folder = os.path.join(in_folder.parent, in_folder.stem)
-
-            logger.info("Found zip file as input. Unzipping it in {}.".format(unzip_folder))
-            with zipfile.ZipFile(args.in_folder, 'r') as zip_ref:
-                zip_ref.extractall(unzip_folder)
-
-            # Check if the zip file did not contain another folder
-            in_subfolder = list(set([os.path.dirname(p) for p in glob.glob(os.path.join(unzip_folder,"*/*"))]))
-            if len(in_subfolder) == 1:
-                logger.info("Found one subfolder in zip file {}. Will use it as image folder".format(in_subfolder))
-                args.in_folder = in_subfolder[0]
-            elif len(in_subfolder) > 1:
-                logger.error("Too many subfolders in zip file: {}".format(in_subfolder))
-                return
-            else:
-                args.in_folder = unzip_folder
-        else:
-            logger.error("Wrong zip format. Found {} instead of zip.".format(ext))
-            raise TypeError	
-
-    # Compute the embeddings
-    embs_file = run_embed(
-        method = VALID_NAMES_EMBED[args.embed],
-        in_folder = args.in_folder,
-        out_folder = args.inter_folder,
-        model_path = args.model_path,
-        device = args.device,
-        from_pretrained= args.from_pretrained,
-    )
-
-    # Compute the clusters
-    clusters_file = run_cluster(
-        method = VALID_NAMES_CLUSTER[args.cluster],
-        embs_file = embs_file,
-        in_folder = args.in_folder,
-        meta_folder = args.meta_folder,
-        out_folder = args.inter_folder,
-        num_classes = args.num_classes,
-        save_embs = args.save_embs,
-        save_labels = args.save_labels,
-        device = args.device,
-        threshold = args.threshold if args.threshold is not None else None,
-    )
-
-    # If not precised, the output folder will have the same name as the input folder with an additional '_clustered' suffix.
-    out_folder = str(Path(args.in_folder)) + "_clustered" if args.out_folder is None else args.out_folder
-
-    # Generate the subfolders
-    out_function = deduplicate if args.dedup else gen_cluster_subfolders
-    out_function(
-        in_folder = args.in_folder,
-        clusters_file = clusters_file,
-        out_folder = out_folder,
-    )
-
-    logger.info("Image crops successfully clustered in {}".format(out_folder))
-
-if __name__=='__main__':
-    main()
+    main(vars(args))

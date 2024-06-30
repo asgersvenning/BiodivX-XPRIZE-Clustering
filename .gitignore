@@ -22,3 +22,5 @@ track.py
 .github/workflows/**
 logs/
 results/
+**.html
+README_files/**
