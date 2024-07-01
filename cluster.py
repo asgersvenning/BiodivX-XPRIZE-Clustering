@@ -35,15 +35,11 @@ class Embedding:
     """
 
     def __init__(self,
-                 in_folder: str = None,
                  filenames: list = None,
                  model_path: str = None,
                  device: str = "cpu",
                  **kwargs,
                  ) -> None:
-
-        # Input folder of image crops
-        self.in_folder = in_folder
 
         self.model_path = model_path
 
@@ -58,9 +54,9 @@ class Embedding:
         self.labels = None
 
         # List of filenames of the images
-        self.filenames = None if filenames is None else filenames
-
-        assert not (self.in_folder is None and self.filenames is None), "Filenames or input folder must be provided."
+        if filenames is None:
+            raise ValueError("Filenames must be provided.")
+        self.filenames = filenames
 
     def save(self, out_file : str, keep_parent_dir: bool = True) -> None: # TODO: allows to save absolute path of images instead of relative.
         """Save the embeddings.
@@ -121,17 +117,9 @@ class Embedding:
 
 class HFDataset(Dataset):
     def __init__(self,
-                 in_folder: str = None,
                  filenames: list = None,
                  from_pretrained:str = 'facebook/dinov2-base') -> None:
-        if in_folder is None and filenames is not None:
-            self.in_folder = None
-            self.filenames = filenames
-        elif filenames is None and in_folder is not None:
-            self.in_folder = in_folder
-            self.filenames = os.listdir(self.in_folder)
-        else:
-            raise ValueError("Filenames or input folder must be provided.")
+        self.filenames = filenames
 
         # Pre-processing
         self.processor = AutoImageProcessor.from_pretrained(from_pretrained)
@@ -140,24 +128,20 @@ class HFDataset(Dataset):
         return len(self.filenames)
 
     def __getitem__(self, idx: int):
-        if self.in_folder is None:
-            img_path = self.filenames[idx]
-        else:
-            img_path = os.path.join(self.in_folder, self.filenames[idx])
+        img_path = self.filenames[idx]
         inputs = self.processor(images=Image.open(img_path).convert("RGB"), return_tensors="pt")
         return inputs["pixel_values"].squeeze()
 
 class HFEmbedding(Embedding):
     def __init__(self,
-                 in_folder: str = None,
                  filenames: str = None,
                  model_path: str = None,
                  device: str = "cpu",
                  from_pretrained:str = 'facebook/dinov2-base') -> None:
-        super().__init__(in_folder, filenames, model_path, device)
+        super().__init__(filenames, model_path, device)
 
         # Dataset definition
-        self.dataset = HFDataset(in_folder=self.in_folder, filenames=self.filenames)
+        self.dataset = HFDataset(filenames=self.filenames)
         self.from_pretrained = from_pretrained
 
         # Load model
@@ -323,8 +307,6 @@ class Clustering:
         Path of the file where the embeddings are stored.
     meta_folder : str, default=None
         (Optional) Path of the metadata folder of the images. Useful for feature extraction.
-    in_folder : str, default=None
-        (Optional) Path of the crop folder. Required only for metadata extraction.
     labels_file : str, default=None
         (Optional) Number of classes in the label set. Required for evaluation.
     add_features : bool, default=False
@@ -334,7 +316,6 @@ class Clustering:
                  embs_file: str,
                  meta_folder: str = None,
                  boxes: list = None,
-                 in_folder: str = None,
                  num_classes: int = None,
                  device: str = "cpu",
                  do_dim_reduc: bool = False,
@@ -368,7 +349,6 @@ class Clustering:
 
         # Metadata folder
         self.meta_folder = meta_folder
-        self.in_folder = in_folder
         self.meta_filenames = None
         self.features = None
 
@@ -376,10 +356,7 @@ class Clustering:
         self.boxes = boxes
 
         # Load features from metadata
-        if self.filenames is not None and self.meta_folder is not None and os.path.exists(self.meta_folder):
-            if self.in_folder is None:
-                raise ValueError("If metadata extraction is intended, the input folder must be precised. Please set `in_folder` argument.")
-
+        if self.meta_folder is not None and os.path.exists(self.meta_folder):
             print("Found metadata folder. Attempting to load crops' features from metadata.")
             self.meta_filenames = [f for f in os.listdir(meta_folder) if Path(f).suffix.lower()==".json"]
             self.load_features()
@@ -419,7 +396,7 @@ class Clustering:
 
     def load_features(self) -> None:
         self.features = [get_crop_features(
-                crop_path=os.path.join(self.in_folder, f),
+                crop_path=f,
                 meta_folder=self.meta_folder,
                 meta_filenames=self.meta_filenames
             ) for f in tqdm(self.filenames)]
@@ -555,20 +532,17 @@ def load_clusters(clusters_file: str):
                 clusters_dict[header[i]] += [int(row[i]) if row[i].lstrip('-').isdigit() else row[i]]
     return clusters_dict
 
-def copy_files(in_folder, out_folder, files):
-    in_outliers_filenames = [os.path.join(in_folder, f) for f in files]
-    out_outliers_filenames = [os.path.join(out_folder, f) for f in files]
+def copy_files(out_folder, files):
+    out_outliers_filenames = [os.path.join(out_folder, os.path.basename(f)) for f in files]
     with ThreadPoolExecutor(100) as exe:
-        _ = [exe.submit(shutil.copyfile, path, dest) for path, dest in zip(in_outliers_filenames, out_outliers_filenames)]
+        _ = [exe.submit(shutil.copyfile, path, dest) for path, dest in zip(files, out_outliers_filenames)]
 
-def deduplicate(in_folder: str, clusters_file: str, out_folder: str):
+def deduplicate(clusters_file: str, out_folder: str):
     """Remove image duplicates from input folder and store unique images inside out_folder.
     Non-clustered occurence are stored in an 'not-clustered' subfolder.
 
     Parameters
     ----------
-    in_folder : str
-        Input image folder. 
     clusters_file : str
         File generated with cluster.Clustering.save method. Can be a .csv, .pkl or .json.
     out_folder : str
@@ -598,24 +572,22 @@ def deduplicate(in_folder: str, clusters_file: str, out_folder: str):
 
     # Copy outliers to output folder
     outliers_filenames = np.array(filenames)[clusters == -1]
-    copy_files(in_folder, unique_subfolder, outliers_filenames)
+    copy_files(unique_subfolder, outliers_filenames)
 
     # Only keep one filename per cluster
     unique_clusters, index_unique_clusters = np.unique(clusters, return_index=True)
     ## Remove -1 clusters
     index_unique_clusters = index_unique_clusters[unique_clusters != -1]
     unique_filenames = np.array(filenames)[index_unique_clusters]
-    copy_files(in_folder, out_folder, unique_filenames)
+    copy_files(out_folder, unique_filenames)
 
-def gen_cluster_subfolders(in_folder: str, clusters_file: str, out_folder: str):
+def gen_cluster_subfolders(clusters_file: str, out_folder: str):
     """Generate a folder with clustered sub-folders using the output cluster file.
 
     Outlier (unique) images are stored directly in the output folder.
 
     Parameters
     ----------
-    in_folder : str
-        Input image folder. 
     clusters_file : str
         File generated with cluster.Clustering.save method. Can be a .csv, .pkl or .json.
     out_folder : str
@@ -639,17 +611,13 @@ def gen_cluster_subfolders(in_folder: str, clusters_file: str, out_folder: str):
 
     # Browse through the cluster dict to copy the images from input folder to subfolders
     out_filenames = []
-    for i in range(len(filenames)):
-        if clusters[i] == -1:
-            out_filenames.append(os.path.join(out_folder, filenames[i]))
-        # Create a subfolder with the cluster number and copy image inside
-        else:
-            out_subfolder = os.path.join(out_folder,str(clusters[i]))
-            if not os.path.exists(out_subfolder):
-                os.makedirs(out_subfolder, exist_ok=True)
-            out_filenames.append(os.path.join(out_subfolder, filenames[i]))
-
-    abs_filenames = [os.path.join(in_folder, f) for f in filenames]
+    for i, name in enumerate(filenames):
+        name = os.path.basename(name)
+        cluster_folder = str(clusters[i]) if clusters[i] != -1 else "not-clustered"
+        out_subfolder = os.path.join(out_folder, cluster_folder)
+        if not os.path.exists(out_subfolder):
+            os.makedirs(out_subfolder, exist_ok=True)
+        out_filenames.append(os.path.join(out_subfolder, name))
 
     # copyfile = lambda x: shutil.copyfile(x[0], x[1])
     # with ThreadPool(32) as p:
@@ -657,7 +625,7 @@ def gen_cluster_subfolders(in_folder: str, clusters_file: str, out_folder: str):
     # for path, dest in zip(abs_filenames, out_filenames):
     #     shutil.copyfile(path, dest)
     with ThreadPoolExecutor(100) as exe:
-        _ = [exe.submit(shutil.copyfile, path, dest) for path, dest in zip(abs_filenames, out_filenames)]
+        _ = [exe.submit(shutil.copyfile, path, dest) for path, dest in zip(filenames, out_filenames)]
 
 
 #----------------------------------------------------------------------------
@@ -837,7 +805,6 @@ VALID_NAMES_EMBED = {
 
 def run_embed(
     method: Callable,
-    in_folder: str,
     out_folder: str,
     model_path: str,
     filenames: list = None,
@@ -857,7 +824,6 @@ def run_embed(
 
     # Compute the embeddings
     emb = method(
-        in_folder = in_folder,
         filenames = filenames,
         model_path = model_path,
         device = device,
@@ -876,7 +842,6 @@ VALID_NAMES_CLUSTER = {
 def run_cluster(
     method: Callable,
     embs_file: str,
-    in_folder: str, 
     meta_folder: str,
     out_folder: str,
     boxes: list = None,
@@ -901,7 +866,6 @@ def run_cluster(
     # Compute the clusters, evaluate them if possible
     cluster = method(
         embs_file = embs_file,
-        in_folder = in_folder,
         boxes = boxes,
         meta_folder = meta_folder,
         num_classes = num_classes,
@@ -923,7 +887,6 @@ def run_cluster(
 
 
 def main(args : Dict):
-    in_folder = args.get("in_folder", None)
     filenames = args.get("images", None)
     boxes = args.get("boxes", None)
     model_path = args.get("model_path", "facebook/dinov2-base")
@@ -944,7 +907,6 @@ def main(args : Dict):
     # Compute the embeddings
     embs_file = run_embed(
         method = VALID_NAMES_EMBED[embed],
-        in_folder = in_folder,
         filenames = filenames,
         out_folder = intermediate_folder,
         model_path = model_path,
@@ -956,7 +918,6 @@ def main(args : Dict):
     clusters_file, clusters = run_cluster(
         method = VALID_NAMES_CLUSTER[cluster],
         embs_file = embs_file,
-        in_folder = in_folder,
         boxes = boxes,
         meta_folder = meta_folder,
         out_folder = intermediate_folder,
@@ -968,19 +929,17 @@ def main(args : Dict):
     )
 
     # If not precised, the output folder will have the same name as the input folder with an additional '_clustered' suffix.
-    if out_folder is None and in_folder is not None:
-        out_folder = str(Path(in_folder)) + "_clustered"
+    if out_folder is None:
+        out_folder = os.path.join(os.getcwd(), "clustering")
 
     # Generate the subfolders
     if dedup:
         deduplicate(
-            in_folder = in_folder,
             clusters_file = clusters_file,
             out_folder = out_folder,
         )
     if gen_cluster_dirs:
         gen_cluster_subfolders(
-            in_folder = in_folder,
             clusters_file = clusters_file,
             out_folder = out_folder,
         )
@@ -990,7 +949,7 @@ def main(args : Dict):
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description="Embedding and clustering computation.")
-    parser.add_argument("-i", "--in_folder", type=str, required=True,
+    parser.add_argument("-i", "--images", type=str, required=True,
         help="Input folder with the image crops.")
     parser.add_argument("-m", "--model_path", type=str, default=None,
         help="(Optional) Model path for the embedding. If not found locally, a default model will be downloaded.") 
