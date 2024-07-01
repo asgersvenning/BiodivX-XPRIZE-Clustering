@@ -1,10 +1,11 @@
-import os, re, shutil, json, csv, pickle, argparse
+import os, re, shutil, json, csv, pickle, argparse, glob
 
-from typing import Callable, List, Tuple, Dict
+from typing import Callable, List, Tuple, Dict, Union, Any
 
 from abc import abstractmethod
 from datetime import datetime
 from pathlib import Path
+from urllib.request import urlretrieve
 
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import Pool
@@ -17,12 +18,63 @@ import numpy as np
 import torch
 
 from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
 from transformers import AutoImageProcessor, AutoModel
+from xprize_insectnet.hierarchical.model import model_from_state_file
 
 from scipy.spatial.distance import pdist, squareform
 from sklearn.metrics.pairwise import cosine_similarity
 
 ERDA_MODEL_ZOO_TEMPLATE = "https://anon.erda.au.dk/share_redirect/aRbj0NCBkf/{}"
+
+# Input parsing 
+IMG_REGEX = re.compile(r'\.(jp[e]{0,1}g|png|dng)$', re.IGNORECASE)
+
+def is_image(file_path):
+    return bool(re.search(IMG_REGEX, file_path)) and os.path.isfile(file_path)
+
+def is_txt(file_path):
+    return file_path.endswith('.txt') and os.path.isfile(file_path)
+
+def is_dir(file_path):
+    return os.path.isdir(file_path)
+
+def is_glob(file_path):
+    return not (is_image(file_path) or is_dir(file_path))
+
+def type_of_path(file_path):
+    if is_image(file_path):
+        return 'image'
+    elif is_txt(file_path):
+        return 'txt'
+    elif is_dir(file_path):
+        return 'dir'
+    elif is_glob(file_path):
+        return 'glob'
+    else:
+        return 'unknown'
+
+def get_images(input_path_dir_globs : Union[str, List[str]]) -> List[str]:
+    if isinstance(input_path_dir_globs, str):
+        input_path_dir_globs = [input_path_dir_globs]
+    images = []
+    for path in input_path_dir_globs:
+        match type_of_path(path):
+            case 'image':
+                images.append(path)
+            case 'txt':
+                with open(path, 'r') as f:
+                    paths = [path.strip() for path in f.readlines() if len(path.strip()) > 0]
+                images.extend(get_images(paths))
+            case 'dir':
+                images.extend(glob.glob(os.path.join(path, '*')))
+            case 'glob':
+                images.extend(glob.glob(path))
+            case _:
+                raise ValueError(f"Unknown path type: {path}")
+    if len(images) == 0:
+        raise ValueError("No images found")
+    return images
 
 
 #----------------------------------------------------------------------------
@@ -35,15 +87,11 @@ class Embedding:
     """
 
     def __init__(self,
-                 in_folder: str = None,
                  filenames: list = None,
                  model_path: str = None,
                  device: str = "cpu",
                  **kwargs,
                  ) -> None:
-
-        # Input folder of image crops
-        self.in_folder = in_folder
 
         self.model_path = model_path
 
@@ -58,9 +106,9 @@ class Embedding:
         self.labels = None
 
         # List of filenames of the images
-        self.filenames = None if filenames is None else filenames
-
-        assert not (self.in_folder is None and self.filenames is None), "Filenames or input folder must be provided."
+        if filenames is None:
+            raise ValueError("Filenames must be provided.")
+        self.filenames = filenames
 
     def save(self, out_file : str, keep_parent_dir: bool = True) -> None: # TODO: allows to save absolute path of images instead of relative.
         """Save the embeddings.
@@ -81,7 +129,7 @@ class Embedding:
         filenames = self.filenames if keep_parent_dir else [Path(f).name for f in self.filenames]
         out_dict = {"filename": filenames}
 
-        if type(self.embs) == np.ndarray:
+        if isinstance(self.embs, (np.ndarray, torch.Tensor)):
             embs = self.embs.tolist()
         elif type(self.embs) == list:
             embs = self.embs
@@ -121,17 +169,9 @@ class Embedding:
 
 class HFDataset(Dataset):
     def __init__(self,
-                 in_folder: str = None,
                  filenames: list = None,
                  from_pretrained:str = 'facebook/dinov2-base') -> None:
-        if in_folder is None and filenames is not None:
-            self.in_folder = None
-            self.filenames = filenames
-        elif filenames is None and in_folder is not None:
-            self.in_folder = in_folder
-            self.filenames = os.listdir(self.in_folder)
-        else:
-            raise ValueError("Filenames or input folder must be provided.")
+        self.filenames = filenames
 
         # Pre-processing
         self.processor = AutoImageProcessor.from_pretrained(from_pretrained)
@@ -140,24 +180,45 @@ class HFDataset(Dataset):
         return len(self.filenames)
 
     def __getitem__(self, idx: int):
-        if self.in_folder is None:
-            img_path = self.filenames[idx]
-        else:
-            img_path = os.path.join(self.in_folder, self.filenames[idx])
+        img_path = self.filenames[idx]
         inputs = self.processor(images=Image.open(img_path).convert("RGB"), return_tensors="pt")
         return inputs["pixel_values"].squeeze()
+    
+class HierarchicalDataset(Dataset):
+    def __init__(
+            self,
+            filenames: list,
+            transform: Callable,
+            device: str = "cpu",
+            dtype: torch.dtype = torch.bfloat16,
+        ) -> None:
+        self.filenames = filenames
+        self.transform = transform
+        self.device = device
+        self.dtype = dtype
+        self._toTensor = transforms.ToTensor()
+
+    def __len__(self):
+        return len(self.filenames)
+    
+    def __getitem__(self, idx: int):
+        img_path = self.filenames[idx]
+        img = Image.open(img_path).convert("RGB")
+        img = self._toTensor(img)
+        img = self.transform(img)
+        return img.to(self.device, dtype=self.dtype)
+        
 
 class HFEmbedding(Embedding):
     def __init__(self,
-                 in_folder: str = None,
                  filenames: str = None,
                  model_path: str = None,
                  device: str = "cpu",
                  from_pretrained:str = 'facebook/dinov2-base') -> None:
-        super().__init__(in_folder, filenames, model_path, device)
+        super().__init__(filenames, model_path, device)
 
         # Dataset definition
-        self.dataset = HFDataset(in_folder=self.in_folder, filenames=self.filenames)
+        self.dataset = HFDataset(filenames=self.filenames)
         self.from_pretrained = from_pretrained
 
         # Load model
@@ -207,6 +268,51 @@ class HFEmbedding(Embedding):
 
         # Filenames
         self.filenames = self.dataset.filenames
+
+class HierarchicalEmbedding(Embedding):
+    def __init__(self, model_path : str, filenames: list = None, device: str = "cpu", from_pretrained : Any=None) -> None:
+        super().__init__(filenames, device)
+
+        # Load model
+        self.dtype = torch.bfloat16
+        self.device = device
+        self.model = model_from_state_file(model_path, self.device, dtype=self.dtype)
+        self.model.eval()
+        self.model.classifier.return_embeddings = True
+        self.transform = self.model.default_transform
+
+    def compute(self,
+                batch_size: int = 128,
+                n_workers: int = 12,
+                ):
+        print("Starting embedding computation with Hierarchical model.")
+
+        # Load data from folder
+        print("Loading data from input folder.")
+
+        dataset = HierarchicalDataset(filenames=self.filenames, transform=self.transform, device=torch.device("cpu"), dtype=self.dtype)
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=n_workers,
+            pin_memory=True,
+            shuffle=False, # Must be disable to match the filenames
+        )
+
+        # Compute embeddings
+        print("Computing embeddings.")
+
+        all_embeddings = []
+        with torch.no_grad():
+            for images in tqdm(dataloader, unit="batch", desc="Predicting embeddings"):
+                all_embeddings.append(self.model(images.to(self.device))[1])
+
+        self.embs = torch.cat(all_embeddings)
+        print("Embeddings: {}".format(self.embs.shape))
+
+        # Filenames
+        self.filenames = dataset.filenames
 
 
 #----------------------------------------------------------------------------
@@ -323,8 +429,6 @@ class Clustering:
         Path of the file where the embeddings are stored.
     meta_folder : str, default=None
         (Optional) Path of the metadata folder of the images. Useful for feature extraction.
-    in_folder : str, default=None
-        (Optional) Path of the crop folder. Required only for metadata extraction.
     labels_file : str, default=None
         (Optional) Number of classes in the label set. Required for evaluation.
     add_features : bool, default=False
@@ -334,7 +438,6 @@ class Clustering:
                  embs_file: str,
                  meta_folder: str = None,
                  boxes: list = None,
-                 in_folder: str = None,
                  num_classes: int = None,
                  device: str = "cpu",
                  do_dim_reduc: bool = False,
@@ -368,7 +471,6 @@ class Clustering:
 
         # Metadata folder
         self.meta_folder = meta_folder
-        self.in_folder = in_folder
         self.meta_filenames = None
         self.features = None
 
@@ -376,10 +478,7 @@ class Clustering:
         self.boxes = boxes
 
         # Load features from metadata
-        if self.filenames is not None and self.meta_folder is not None and os.path.exists(self.meta_folder):
-            if self.in_folder is None:
-                raise ValueError("If metadata extraction is intended, the input folder must be precised. Please set `in_folder` argument.")
-
+        if self.meta_folder is not None and os.path.exists(self.meta_folder):
             print("Found metadata folder. Attempting to load crops' features from metadata.")
             self.meta_filenames = [f for f in os.listdir(meta_folder) if Path(f).suffix.lower()==".json"]
             self.load_features()
@@ -419,7 +518,7 @@ class Clustering:
 
     def load_features(self) -> None:
         self.features = [get_crop_features(
-                crop_path=os.path.join(self.in_folder, f),
+                crop_path=f,
                 meta_folder=self.meta_folder,
                 meta_filenames=self.meta_filenames
             ) for f in tqdm(self.filenames)]
@@ -555,20 +654,17 @@ def load_clusters(clusters_file: str):
                 clusters_dict[header[i]] += [int(row[i]) if row[i].lstrip('-').isdigit() else row[i]]
     return clusters_dict
 
-def copy_files(in_folder, out_folder, files):
-    in_outliers_filenames = [os.path.join(in_folder, f) for f in files]
-    out_outliers_filenames = [os.path.join(out_folder, f) for f in files]
+def copy_files(out_folder, files):
+    out_outliers_filenames = [os.path.join(out_folder, os.path.basename(f)) for f in files]
     with ThreadPoolExecutor(100) as exe:
-        _ = [exe.submit(shutil.copyfile, path, dest) for path, dest in zip(in_outliers_filenames, out_outliers_filenames)]
+        _ = [exe.submit(shutil.copyfile, path, dest) for path, dest in zip(files, out_outliers_filenames)]
 
-def deduplicate(in_folder: str, clusters_file: str, out_folder: str):
+def deduplicate(clusters_file: str, out_folder: str):
     """Remove image duplicates from input folder and store unique images inside out_folder.
     Non-clustered occurence are stored in an 'not-clustered' subfolder.
 
     Parameters
     ----------
-    in_folder : str
-        Input image folder. 
     clusters_file : str
         File generated with cluster.Clustering.save method. Can be a .csv, .pkl or .json.
     out_folder : str
@@ -598,24 +694,22 @@ def deduplicate(in_folder: str, clusters_file: str, out_folder: str):
 
     # Copy outliers to output folder
     outliers_filenames = np.array(filenames)[clusters == -1]
-    copy_files(in_folder, unique_subfolder, outliers_filenames)
+    copy_files(unique_subfolder, outliers_filenames)
 
     # Only keep one filename per cluster
     unique_clusters, index_unique_clusters = np.unique(clusters, return_index=True)
     ## Remove -1 clusters
     index_unique_clusters = index_unique_clusters[unique_clusters != -1]
     unique_filenames = np.array(filenames)[index_unique_clusters]
-    copy_files(in_folder, out_folder, unique_filenames)
+    copy_files(out_folder, unique_filenames)
 
-def gen_cluster_subfolders(in_folder: str, clusters_file: str, out_folder: str):
+def gen_cluster_subfolders(clusters_file: str, out_folder: str):
     """Generate a folder with clustered sub-folders using the output cluster file.
 
     Outlier (unique) images are stored directly in the output folder.
 
     Parameters
     ----------
-    in_folder : str
-        Input image folder. 
     clusters_file : str
         File generated with cluster.Clustering.save method. Can be a .csv, .pkl or .json.
     out_folder : str
@@ -639,17 +733,13 @@ def gen_cluster_subfolders(in_folder: str, clusters_file: str, out_folder: str):
 
     # Browse through the cluster dict to copy the images from input folder to subfolders
     out_filenames = []
-    for i in range(len(filenames)):
-        if clusters[i] == -1:
-            out_filenames.append(os.path.join(out_folder, filenames[i]))
-        # Create a subfolder with the cluster number and copy image inside
-        else:
-            out_subfolder = os.path.join(out_folder,str(clusters[i]))
-            if not os.path.exists(out_subfolder):
-                os.makedirs(out_subfolder, exist_ok=True)
-            out_filenames.append(os.path.join(out_subfolder, filenames[i]))
-
-    abs_filenames = [os.path.join(in_folder, f) for f in filenames]
+    for i, name in enumerate(filenames):
+        name = os.path.basename(name)
+        cluster_folder = str(clusters[i]) if clusters[i] != -1 else "not-clustered"
+        out_subfolder = os.path.join(out_folder, cluster_folder)
+        if not os.path.exists(out_subfolder):
+            os.makedirs(out_subfolder, exist_ok=True)
+        out_filenames.append(os.path.join(out_subfolder, name))
 
     # copyfile = lambda x: shutil.copyfile(x[0], x[1])
     # with ThreadPool(32) as p:
@@ -657,7 +747,7 @@ def gen_cluster_subfolders(in_folder: str, clusters_file: str, out_folder: str):
     # for path, dest in zip(abs_filenames, out_filenames):
     #     shutil.copyfile(path, dest)
     with ThreadPoolExecutor(100) as exe:
-        _ = [exe.submit(shutil.copyfile, path, dest) for path, dest in zip(abs_filenames, out_filenames)]
+        _ = [exe.submit(shutil.copyfile, path, dest) for path, dest in zip(filenames, out_filenames)]
 
 
 #----------------------------------------------------------------------------
@@ -833,11 +923,11 @@ class CosineClustering(Clustering):
 
 VALID_NAMES_EMBED = {
     "dino": HFEmbedding,
+    "hierarchical": HierarchicalEmbedding,
 }
 
 def run_embed(
     method: Callable,
-    in_folder: str,
     out_folder: str,
     model_path: str,
     filenames: list = None,
@@ -857,7 +947,6 @@ def run_embed(
 
     # Compute the embeddings
     emb = method(
-        in_folder = in_folder,
         filenames = filenames,
         model_path = model_path,
         device = device,
@@ -876,7 +965,6 @@ VALID_NAMES_CLUSTER = {
 def run_cluster(
     method: Callable,
     embs_file: str,
-    in_folder: str, 
     meta_folder: str,
     out_folder: str,
     boxes: list = None,
@@ -901,7 +989,6 @@ def run_cluster(
     # Compute the clusters, evaluate them if possible
     cluster = method(
         embs_file = embs_file,
-        in_folder = in_folder,
         boxes = boxes,
         meta_folder = meta_folder,
         num_classes = num_classes,
@@ -923,12 +1010,18 @@ def run_cluster(
 
 
 def main(args : Dict):
-    in_folder = args.get("in_folder", None)
-    filenames = args.get("images", None)
+    filenames = args.get("input", None)
+    if filenames is None:
+        raise ValueError("Input files must be specified.")
+    filenames = get_images(filenames)
     boxes = args.get("boxes", None)
-    model_path = args.get("model_path", "facebook/dinov2-base")
+    # model_path = args.get("model_path", "facebook/dinov2-base")
     out_folder = args.get("out_folder", None)
-    device = args.get("device", "cpu")
+    if out_folder is None:
+        raise ValueError("Output folder must be specified.")
+    device = args.get("device", None)
+    if device is None:
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
     embed = args.get("embed", "dino")
     from_pretrained = args.get("from_pretrained", None)
     cluster = args.get("cluster", "cosine")
@@ -936,17 +1029,25 @@ def main(args : Dict):
     save_embs = args.get("save_embs", False)
     save_labels = args.get("save_labels", False)
     meta_folder = args.get("meta_folder", None)
-    intermediate_folder = args.get("inter_folder", "results/")
     threshold = args.get("threshold", None)
     dedup = args.get("dedup", False)
     gen_cluster_dirs = args.get("gen_cluster_dirs", False)
 
+    match embed:
+        case "dino":
+            model_path = "facebook/dinov2-base"
+        case "hierarchical":
+            model_path = "efficientnet_v2_s___hierarchical.state"
+            if not os.path.exists(model_path):
+                urlretrieve(ERDA_MODEL_ZOO_TEMPLATE.format("hierarchical/effnetv2s_sgfoc_train_v3_1/efficientnet_v2_s___epoch_8_batch_22000.state"), model_path)
+        case _:
+            raise ValueError("Embedding method not recognized: {}".format(embed))
+
     # Compute the embeddings
     embs_file = run_embed(
         method = VALID_NAMES_EMBED[embed],
-        in_folder = in_folder,
         filenames = filenames,
-        out_folder = intermediate_folder,
+        out_folder = out_folder,
         model_path = model_path,
         device = device,
         from_pretrained = from_pretrained,
@@ -956,10 +1057,9 @@ def main(args : Dict):
     clusters_file, clusters = run_cluster(
         method = VALID_NAMES_CLUSTER[cluster],
         embs_file = embs_file,
-        in_folder = in_folder,
         boxes = boxes,
         meta_folder = meta_folder,
-        out_folder = intermediate_folder,
+        out_folder = out_folder,
         num_classes = num_classes,
         save_embs = save_embs,
         save_labels = save_labels,
@@ -968,21 +1068,18 @@ def main(args : Dict):
     )
 
     # If not precised, the output folder will have the same name as the input folder with an additional '_clustered' suffix.
-    if out_folder is None and in_folder is not None:
-        out_folder = str(Path(in_folder)) + "_clustered"
+    cluster_folder = os.path.join(out_folder, "clusters")
 
     # Generate the subfolders
     if dedup:
         deduplicate(
-            in_folder = in_folder,
             clusters_file = clusters_file,
-            out_folder = out_folder,
+            out_folder = cluster_folder,
         )
     if gen_cluster_dirs:
         gen_cluster_subfolders(
-            in_folder = in_folder,
             clusters_file = clusters_file,
-            out_folder = out_folder,
+            out_folder = cluster_folder,
         )
 
     print("Image crops successfully clustered in {}".format(out_folder))
@@ -990,14 +1087,12 @@ def main(args : Dict):
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description="Embedding and clustering computation.")
-    parser.add_argument("-i", "--in_folder", type=str, required=True,
-        help="Input folder with the image crops.")
-    parser.add_argument("-m", "--model_path", type=str, default=None,
-        help="(Optional) Model path for the embedding. If not found locally, a default model will be downloaded.") 
-    parser.add_argument("-o", "--out_folder", type=str, default=None,
+    parser.add_argument('-i', '--input', type=str, nargs="+", required=True,
+        help='Path(s), director(y/ies) or glob(s) to such. If it is a .txt file, then it should contain lines corresponding to the former. Outputs will be saved in the output directory.')
+    parser.add_argument("-o", "--out_folder", type=str, required=True,
         help="(Optional) Output folder for the clustered images.")
-    parser.add_argument("-d", "--device", type=str, default="cpu",
-        help="(Optional) Device used to run the embedding model.")
+    parser.add_argument("-d", "--device", type=str,
+        help="(Optional) Device used to run the embedding model. Defaults to cuda:0 if available, else 'cpu'.")
     parser.add_argument("-e", "--embed", type=str, default="dino",
         help="(Optional) Name of the embedding method. Valid names: {}".format(VALID_NAMES_EMBED.keys()))
     parser.add_argument("-fp", "--from_pretrained", type=str, default='facebook/dinov2-base',
@@ -1012,8 +1107,6 @@ if __name__=='__main__':
         help="(Optional) Path of the metadata folder of the images. Useful for feature extraction.")
     parser.add_argument("-x", "--num_classes", type=int, default=None,
         help="(Optional) Number of classes of the labels. Required for the evaluation") 
-    parser.add_argument("-if", "--inter_folder", type=str, default="results/",
-        help="(Optional) Intermediate folder to store embeddings and clusters data. Default='./results/'")
     parser.add_argument("-se", "--save_embs", default=False,  action='store_true', dest='save_embs',
         help="(Optional) Whether to save the embeddings in the output file.") 
     parser.add_argument("-sl", "--save_labels", default=False,  action='store_true', dest='save_labels',
