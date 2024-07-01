@@ -891,7 +891,11 @@ def main(args : Dict):
     boxes = args.get("boxes", None)
     model_path = args.get("model_path", "facebook/dinov2-base")
     out_folder = args.get("out_folder", None)
-    device = args.get("device", "cpu")
+    if out_folder is None:
+        raise ValueError("Output folder must be specified.")
+    device = args.get("device", None)
+    if device is None:
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
     embed = args.get("embed", "dino")
     from_pretrained = args.get("from_pretrained", None)
     cluster = args.get("cluster", "cosine")
@@ -899,7 +903,6 @@ def main(args : Dict):
     save_embs = args.get("save_embs", False)
     save_labels = args.get("save_labels", False)
     meta_folder = args.get("meta_folder", None)
-    intermediate_folder = args.get("inter_folder", "results/")
     threshold = args.get("threshold", None)
     dedup = args.get("dedup", False)
     gen_cluster_dirs = args.get("gen_cluster_dirs", False)
@@ -908,7 +911,7 @@ def main(args : Dict):
     embs_file = run_embed(
         method = VALID_NAMES_EMBED[embed],
         filenames = filenames,
-        out_folder = intermediate_folder,
+        out_folder = out_folder,
         model_path = model_path,
         device = device,
         from_pretrained = from_pretrained,
@@ -920,7 +923,7 @@ def main(args : Dict):
         embs_file = embs_file,
         boxes = boxes,
         meta_folder = meta_folder,
-        out_folder = intermediate_folder,
+        out_folder = out_folder,
         num_classes = num_classes,
         save_embs = save_embs,
         save_labels = save_labels,
@@ -929,19 +932,18 @@ def main(args : Dict):
     )
 
     # If not precised, the output folder will have the same name as the input folder with an additional '_clustered' suffix.
-    if out_folder is None:
-        out_folder = os.path.join(os.getcwd(), "clustering")
+    cluster_folder = os.path.join(out_folder, "clusters")
 
     # Generate the subfolders
     if dedup:
         deduplicate(
             clusters_file = clusters_file,
-            out_folder = out_folder,
+            out_folder = cluster_folder,
         )
     if gen_cluster_dirs:
         gen_cluster_subfolders(
             clusters_file = clusters_file,
-            out_folder = out_folder,
+            out_folder = cluster_folder,
         )
 
     print("Image crops successfully clustered in {}".format(out_folder))
@@ -949,14 +951,14 @@ def main(args : Dict):
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description="Embedding and clustering computation.")
-    parser.add_argument("-i", "--images", type=str, required=True,
+    parser.add_argument("-i", "--images", type=str, nargs="+", required=True,
         help="Input folder with the image crops.")
     parser.add_argument("-m", "--model_path", type=str, default=None,
         help="(Optional) Model path for the embedding. If not found locally, a default model will be downloaded.") 
-    parser.add_argument("-o", "--out_folder", type=str, default=None,
+    parser.add_argument("-o", "--out_folder", type=str, required=True,
         help="(Optional) Output folder for the clustered images.")
-    parser.add_argument("-d", "--device", type=str, default="cpu",
-        help="(Optional) Device used to run the embedding model.")
+    parser.add_argument("-d", "--device", type=str,
+        help="(Optional) Device used to run the embedding model. Defaults to cuda:0 if available, else 'cpu'.")
     parser.add_argument("-e", "--embed", type=str, default="dino",
         help="(Optional) Name of the embedding method. Valid names: {}".format(VALID_NAMES_EMBED.keys()))
     parser.add_argument("-fp", "--from_pretrained", type=str, default='facebook/dinov2-base',
@@ -971,8 +973,6 @@ if __name__=='__main__':
         help="(Optional) Path of the metadata folder of the images. Useful for feature extraction.")
     parser.add_argument("-x", "--num_classes", type=int, default=None,
         help="(Optional) Number of classes of the labels. Required for the evaluation") 
-    parser.add_argument("-if", "--inter_folder", type=str, default="results/",
-        help="(Optional) Intermediate folder to store embeddings and clusters data. Default='./results/'")
     parser.add_argument("-se", "--save_embs", default=False,  action='store_true', dest='save_embs',
         help="(Optional) Whether to save the embeddings in the output file.") 
     parser.add_argument("-sl", "--save_labels", default=False,  action='store_true', dest='save_labels',
