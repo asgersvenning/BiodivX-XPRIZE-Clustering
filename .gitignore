@@ -25,3 +25,4 @@ results/
 **.html
 README_files/**
 data
+test.sh
