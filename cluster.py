@@ -475,7 +475,7 @@ class Clustering:
         self.features = None
 
         # OR hard-passed metadata
-        if len(boxes) != len(self.filenames):
+        if boxes is not None and len(boxes) != len(self.filenames):
             raise ValueError(f"Boxes and filenames must have the same length. Found {len(boxes)} boxes and {len(self.filenames)} filenames.")
         self.boxes = boxes
 
@@ -626,7 +626,26 @@ class Clustering:
         """Abstract method. Child classes must override it.
         """
         pass
-    
+
+    def compute_chunk(self, chunk_size:int = 10000, **kwargs):
+        assert type(chunk_size)==int, f"Chunk size of wrong type {type(chunk_size)}"
+        assert chunk_size > 0, f"Chunk size too small {chunk_size}"
+
+        self.embs_all = self.embs.copy()
+        self.features_all = self.features.copy()
+        self.clusters_all = np.zeros(len(self.embs), dtype=np.int32)
+
+        max_cluster_idx = 0
+        for i in range(0,len(self.embs_all), chunk_size):
+            self.embs = self.embs_all[i:i+chunk_size]
+            self.features = self.features_all[i:i+chunk_size]
+            self.compute(**kwargs)
+            self.clusters_all[i:i+chunk_size] = self.clusters + max_cluster_idx
+            max_cluster_idx = self.clusters_all.max() + 1
+
+        self.embs = self.embs_all
+        self.features = self.features_all
+        self.clusters = self.clusters_all
     
 def load_clusters(clusters_file: str):
     """Load the cluster file.
@@ -975,6 +994,7 @@ def run_cluster(
     save_labels: bool = False,
     device: str = "cpu",
     threshold: float = None,
+    chunk_size: int = 10000,
     ) -> str:
     """Run the clustering workflow.
     """
@@ -996,7 +1016,7 @@ def run_cluster(
         num_classes = num_classes,
         device = device)
     
-    cluster.compute() if threshold is None else cluster.compute(threshold)
+    cluster.compute_chunk(chunk_size) if threshold is None else cluster.compute_chunk(chunk_size=chunk_size, threshold=threshold)
     if num_classes is not None and cluster.labels is not None:
         print("Found cluster labels. Evaluating.")
         cluster.eval()
