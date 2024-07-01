@@ -279,7 +279,7 @@ class HierarchicalEmbedding(Embedding):
         self.model = model_from_state_file(model_path, self.device, dtype=self.dtype)
         self.model.eval()
         self.model.classifier.return_embeddings = True
-        self.transform = self.model.default_transform
+        self.transform = lambda x : self.model.default_transform(x * 255.0)
 
     def compute(self,
                 batch_size: int = 128,
@@ -475,6 +475,8 @@ class Clustering:
         self.features = None
 
         # OR hard-passed metadata
+        if len(boxes) != len(self.filenames):
+            raise ValueError(f"Boxes and filenames must have the same length. Found {len(boxes)} boxes and {len(self.filenames)} filenames.")
         self.boxes = boxes
 
         # Load features from metadata
@@ -871,7 +873,7 @@ def get_cosine_similarity(
 class CosineClustering(Clustering):
     """Good and fast.
     """
-    def compute(self, threshold: float = 0.8):
+    def compute(self, threshold: float = 0.9):
         print("Starting clustering with cosine similarity algorithm with threshold {}".format(threshold))
         print("Computing cosine similarity matrix.")
         # cosine = get_cosine_similarity(self.embs, num_workers=cpu_count())
