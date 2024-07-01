@@ -1,6 +1,6 @@
-import os, re, shutil, json, csv, pickle, argparse
+import os, re, shutil, json, csv, pickle, argparse, glob
 
-from typing import Callable, List, Tuple, Dict
+from typing import Callable, List, Tuple, Dict, Union
 
 from abc import abstractmethod
 from datetime import datetime
@@ -23,6 +23,55 @@ from scipy.spatial.distance import pdist, squareform
 from sklearn.metrics.pairwise import cosine_similarity
 
 ERDA_MODEL_ZOO_TEMPLATE = "https://anon.erda.au.dk/share_redirect/aRbj0NCBkf/{}"
+
+# Input parsing 
+IMG_REGEX = re.compile(r'\.(jp[e]{0,1}g|png|dng)$', re.IGNORECASE)
+
+def is_image(file_path):
+    return bool(re.search(IMG_REGEX, file_path)) and os.path.isfile(file_path)
+
+def is_txt(file_path):
+    return file_path.endswith('.txt') and os.path.isfile(file_path)
+
+def is_dir(file_path):
+    return os.path.isdir(file_path)
+
+def is_glob(file_path):
+    return not (is_image(file_path) or is_dir(file_path))
+
+def type_of_path(file_path):
+    if is_image(file_path):
+        return 'image'
+    elif is_txt(file_path):
+        return 'txt'
+    elif is_dir(file_path):
+        return 'dir'
+    elif is_glob(file_path):
+        return 'glob'
+    else:
+        return 'unknown'
+
+def get_images(input_path_dir_globs : Union[str, List[str]]) -> List[str]:
+    if isinstance(input_path_dir_globs, str):
+        input_path_dir_globs = [input_path_dir_globs]
+    images = []
+    for path in input_path_dir_globs:
+        match type_of_path(path):
+            case 'image':
+                images.append(path)
+            case 'txt':
+                with open(path, 'r') as f:
+                    paths = [path.strip() for path in f.readlines() if len(path.strip()) > 0]
+                images.extend(get_images(paths))
+            case 'dir':
+                images.extend(glob.glob(os.path.join(path, '*')))
+            case 'glob':
+                images.extend(glob.glob(path))
+            case _:
+                raise ValueError(f"Unknown path type: {path}")
+    if len(images) == 0:
+        raise ValueError("No images found")
+    return images
 
 
 #----------------------------------------------------------------------------
@@ -887,7 +936,10 @@ def run_cluster(
 
 
 def main(args : Dict):
-    filenames = args.get("images", None)
+    filenames = args.get("input", None)
+    if filenames is None:
+        raise ValueError("Input files must be specified.")
+    filenames = get_images(filenames)
     boxes = args.get("boxes", None)
     model_path = args.get("model_path", "facebook/dinov2-base")
     out_folder = args.get("out_folder", None)
@@ -951,8 +1003,8 @@ def main(args : Dict):
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description="Embedding and clustering computation.")
-    parser.add_argument("-i", "--images", type=str, nargs="+", required=True,
-        help="Input folder with the image crops.")
+    parser.add_argument('-i', '--input', type=str, nargs="+", required=True,
+        help='Path(s), director(y/ies) or glob(s) to such. If it is a .txt file, then it should contain lines corresponding to the former. Outputs will be saved in the output directory.')
     parser.add_argument("-m", "--model_path", type=str, default=None,
         help="(Optional) Model path for the embedding. If not found locally, a default model will be downloaded.") 
     parser.add_argument("-o", "--out_folder", type=str, required=True,
