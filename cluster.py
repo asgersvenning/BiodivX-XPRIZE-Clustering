@@ -1,10 +1,11 @@
 import os, re, shutil, json, csv, pickle, argparse, glob
 
-from typing import Callable, List, Tuple, Dict, Union
+from typing import Callable, List, Tuple, Dict, Union, Any
 
 from abc import abstractmethod
 from datetime import datetime
 from pathlib import Path
+from urllib.request import urlretrieve
 
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import Pool
@@ -17,7 +18,9 @@ import numpy as np
 import torch
 
 from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
 from transformers import AutoImageProcessor, AutoModel
+from xprize_insectnet.hierarchical.model import model_from_state_file
 
 from scipy.spatial.distance import pdist, squareform
 from sklearn.metrics.pairwise import cosine_similarity
@@ -126,7 +129,7 @@ class Embedding:
         filenames = self.filenames if keep_parent_dir else [Path(f).name for f in self.filenames]
         out_dict = {"filename": filenames}
 
-        if type(self.embs) == np.ndarray:
+        if isinstance(self.embs, (np.ndarray, torch.Tensor)):
             embs = self.embs.tolist()
         elif type(self.embs) == list:
             embs = self.embs
@@ -180,6 +183,31 @@ class HFDataset(Dataset):
         img_path = self.filenames[idx]
         inputs = self.processor(images=Image.open(img_path).convert("RGB"), return_tensors="pt")
         return inputs["pixel_values"].squeeze()
+    
+class HierarchicalDataset(Dataset):
+    def __init__(
+            self,
+            filenames: list,
+            transform: Callable,
+            device: str = "cpu",
+            dtype: torch.dtype = torch.bfloat16,
+        ) -> None:
+        self.filenames = filenames
+        self.transform = transform
+        self.device = device
+        self.dtype = dtype
+        self._toTensor = transforms.ToTensor()
+
+    def __len__(self):
+        return len(self.filenames)
+    
+    def __getitem__(self, idx: int):
+        img_path = self.filenames[idx]
+        img = Image.open(img_path).convert("RGB")
+        img = self._toTensor(img)
+        img = self.transform(img)
+        return img.to(self.device, dtype=self.dtype)
+        
 
 class HFEmbedding(Embedding):
     def __init__(self,
@@ -240,6 +268,51 @@ class HFEmbedding(Embedding):
 
         # Filenames
         self.filenames = self.dataset.filenames
+
+class HierarchicalEmbedding(Embedding):
+    def __init__(self, model_path : str, filenames: list = None, device: str = "cpu", from_pretrained : Any=None) -> None:
+        super().__init__(filenames, device)
+
+        # Load model
+        self.dtype = torch.bfloat16
+        self.device = device
+        self.model = model_from_state_file(model_path, self.device, dtype=self.dtype)
+        self.model.eval()
+        self.model.classifier.return_embeddings = True
+        self.transform = self.model.default_transform
+
+    def compute(self,
+                batch_size: int = 128,
+                n_workers: int = 12,
+                ):
+        print("Starting embedding computation with Hierarchical model.")
+
+        # Load data from folder
+        print("Loading data from input folder.")
+
+        dataset = HierarchicalDataset(filenames=self.filenames, transform=self.transform, device=torch.device("cpu"), dtype=self.dtype)
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=n_workers,
+            pin_memory=True,
+            shuffle=False, # Must be disable to match the filenames
+        )
+
+        # Compute embeddings
+        print("Computing embeddings.")
+
+        all_embeddings = []
+        with torch.no_grad():
+            for images in tqdm(dataloader, unit="batch", desc="Predicting embeddings"):
+                all_embeddings.append(self.model(images.to(self.device))[1])
+
+        self.embs = torch.cat(all_embeddings)
+        print("Embeddings: {}".format(self.embs.shape))
+
+        # Filenames
+        self.filenames = dataset.filenames
 
 
 #----------------------------------------------------------------------------
@@ -850,6 +923,7 @@ class CosineClustering(Clustering):
 
 VALID_NAMES_EMBED = {
     "dino": HFEmbedding,
+    "hierarchical": HierarchicalEmbedding,
 }
 
 def run_embed(
@@ -941,7 +1015,7 @@ def main(args : Dict):
         raise ValueError("Input files must be specified.")
     filenames = get_images(filenames)
     boxes = args.get("boxes", None)
-    model_path = args.get("model_path", "facebook/dinov2-base")
+    # model_path = args.get("model_path", "facebook/dinov2-base")
     out_folder = args.get("out_folder", None)
     if out_folder is None:
         raise ValueError("Output folder must be specified.")
@@ -958,6 +1032,16 @@ def main(args : Dict):
     threshold = args.get("threshold", None)
     dedup = args.get("dedup", False)
     gen_cluster_dirs = args.get("gen_cluster_dirs", False)
+
+    match embed:
+        case "dino":
+            model_path = "facebook/dinov2-base"
+        case "hierarchical":
+            model_path = "efficientnet_v2_s___hierarchical.state"
+            if not os.path.exists(model_path):
+                urlretrieve(ERDA_MODEL_ZOO_TEMPLATE.format("hierarchical/effnetv2s_sgfoc_train_v3_1/efficientnet_v2_s___epoch_8_batch_22000.state"), model_path)
+        case _:
+            raise ValueError("Embedding method not recognized: {}".format(embed))
 
     # Compute the embeddings
     embs_file = run_embed(
@@ -1005,8 +1089,6 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser(description="Embedding and clustering computation.")
     parser.add_argument('-i', '--input', type=str, nargs="+", required=True,
         help='Path(s), director(y/ies) or glob(s) to such. If it is a .txt file, then it should contain lines corresponding to the former. Outputs will be saved in the output directory.')
-    parser.add_argument("-m", "--model_path", type=str, default=None,
-        help="(Optional) Model path for the embedding. If not found locally, a default model will be downloaded.") 
     parser.add_argument("-o", "--out_folder", type=str, required=True,
         help="(Optional) Output folder for the clustered images.")
     parser.add_argument("-d", "--device", type=str,

@@ -22,6 +22,7 @@ REQUIRED_PYTHON_VERSION="3.11.5"
 UBUNTU_VERSION="22.04"
 CUDA_VERSION="12.2"
 NVIDIA_DRIVER_VERSION="535.161.07"
+CWD=$(pwd)
 
 # Function to check OS and CUDA version
 check_system_requirements() {
@@ -109,6 +110,21 @@ if [ ! "$(pip show scikit-learn)" ]; then
     fi
 else
     echo "scikit-learn already installed. Skipping installation."
+fi
+
+# Install xprize_insectnet
+if [ ! "$(pip show xprize_insectnet)" ]; then
+    cd "$HOME"
+    if [ ! -d "insectnet" ]; then
+        if ! git clone git@github.com:GuillaumeMougeot/insectnet.git; then
+            echo "Failed to clone insectnet repository."
+            handle_error
+        fi
+    fi
+    cd insectnet
+    pip install -e .
+else
+    echo "xprize_insectnet already installed. Skipping installation."
 fi
 
 # Return to the original directory
