@@ -24,3 +24,4 @@ logs/
 results/
 **.html
 README_files/**
+data
