@@ -907,10 +907,10 @@ class CosineClustering(Clustering):
             centers_dist = pdist(centers, "euclidean")
 
             # Apply a distance threshold, TODO: by default = 1/10 of the max distance OR = 400 ??
-            dist_th = 400
+            dist_th = 100
             centers_dist = squareform(centers_dist)
-            centers_kernel = (centers_dist < dist_th)
-            centers_kernel = torch.from_numpy(centers_kernel).to(self.device)
+            S = (centers_dist < dist_th)
+            S = torch.from_numpy(S).to(self.device)
 
             # Time distance matrix
             times = [f["date"] for f in self.features]
@@ -918,15 +918,21 @@ class CosineClustering(Clustering):
             times_dist = pdist(np.expand_dims(times,-1), "euclidean")
 
             # Apply a time threshold, TODO: default=10secondes
-            time_th = 180
+            time_th_large = 300
+            time_th_small = 30
             times_dist = squareform(times_dist)
-            times_kernel = (times_dist < time_th)
-            times_kernel = torch.from_numpy(times_kernel).to(self.device)
+            TL = (times_dist < time_th_large)
+            TL = torch.from_numpy(TL).to(self.device)
+            TS = (times_dist < time_th_small)
+            TS = torch.from_numpy(TS).to(self.device)
 
-            cosine = centers_kernel * times_kernel * cosine
-            del centers_kernel, times_kernel
+            # cosine = centers_kernel * times_kernel * cosine
+            # del centers_kernel, times_kernel
 
-        is_connected = (cosine >= threshold) 
+        E = cosine >= threshold
+        is_connected = E
+        if self.features is not None:
+            is_connected &= (S & TL) | (TS & E)
         del cosine
 
         print("Computing transitive closure")
