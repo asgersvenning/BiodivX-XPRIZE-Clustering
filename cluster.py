@@ -227,7 +227,7 @@ class HFEmbedding(Embedding):
         self.model = AutoModel.from_pretrained(model_path)
 
     def compute(self, 
-            batch_size: int = 128,
+            batch_size: int = 64,
             n_workers: int = 12,
             ):
         
@@ -241,7 +241,7 @@ class HFEmbedding(Embedding):
             self.dataset,
             batch_size=batch_size,
             num_workers=n_workers,
-            pin_memory=True,
+            pin_memory=False,
             shuffle=False, # Must be disable to match the filenames
         )
 
@@ -282,7 +282,7 @@ class HierarchicalEmbedding(Embedding):
         self.transform = lambda x : self.model.default_transform(x * 255.0)
 
     def compute(self,
-                batch_size: int = 128,
+                batch_size: int = 64,
                 n_workers: int = 12,
                 ):
         print("Starting embedding computation with Hierarchical model.")
@@ -296,7 +296,7 @@ class HierarchicalEmbedding(Embedding):
             dataset,
             batch_size=batch_size,
             num_workers=n_workers,
-            pin_memory=True,
+            pin_memory=False,
             shuffle=False, # Must be disable to match the filenames
         )
 
@@ -306,7 +306,7 @@ class HierarchicalEmbedding(Embedding):
         all_embeddings = []
         with torch.no_grad():
             for images in tqdm(dataloader, unit="batch", desc="Predicting embeddings"):
-                all_embeddings.append(self.model(images.to(self.device))[1])
+                all_embeddings.append(self.model(images.to(self.device))[1].detach().cpu())
 
         self.embs = torch.cat(all_embeddings)
         print("Embeddings: {}".format(self.embs.shape))
