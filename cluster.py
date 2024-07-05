@@ -1,6 +1,6 @@
 import os, re, shutil, json, csv, pickle, argparse, glob
 
-from typing import Callable, List, Tuple, Dict, Union, Any
+from typing import Callable, List, Tuple, Dict, Union, Any, Optional, Iterable
 
 from abc import abstractmethod
 from datetime import datetime
@@ -26,6 +26,7 @@ from scipy.spatial.distance import pdist, squareform
 from sklearn.metrics.pairwise import cosine_similarity
 
 ERDA_MODEL_ZOO_TEMPLATE = "https://anon.erda.au.dk/share_redirect/aRbj0NCBkf/{}"
+STANDARD_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 # Input parsing 
 IMG_REGEX = re.compile(r'\.(jp[e]{0,1}g|png|dng)$', re.IGNORECASE)
@@ -76,6 +77,75 @@ def get_images(input_path_dir_globs : Union[str, List[str]]) -> List[str]:
         raise ValueError("No images found")
     return images
 
+# Time stamp extraction
+def get_timestamp(image_path : Union[str, Iterable[str]], time_format : str) -> str:
+    if not isinstance(image_path, str) and not all(map(lambda p : isinstance(p, str), image_path)):
+        raise TypeError(f"`image_path` must be a string, got {type(image_path)}")
+    if not isinstance(time_format, str):
+        raise TypeError(f"`time_format` must be a string, got {type(time_format)}")
+    if not isinstance(time_format, str):
+        raise TypeError(f"`time_format` must be a string, got {type(time_format)}")
+
+    time_regex_parts = re.findall(r'(%([a-zA-Z])\2+)', time_format)
+    time_regex_parts = {s : len(part) - 1 for part, s in time_regex_parts}
+    time_regex_sep = re.split("|".join("%" + s * l for s, l in time_regex_parts.items()), time_format)
+    time_regex_format = "{}".join(time_regex_sep)
+    time_regex = time_regex_format.format(*[f'(\d{{{p}}})' for p in time_regex_parts.values()])
+
+    predefined_order = {"Y" : 0, "m" : 1, "d" : 2, "H" : 3, "M" : 4, "S" : 5}
+    defaults = {"Y" : "0000", "m" : "00", "d" : "00", "H" : "00", "M" : "00", "S" : "00"}
+    defaults = {predefined_order[k] : v for k, v in defaults.items()}
+    reorder = {i : predefined_order[k] for i, k in enumerate(time_regex_parts.keys())}
+
+    if isinstance(image_path, str):
+        time_parts = get_matches_in_order(image_path, time_regex, reorder, defaults)
+        return format_timestamp(time_parts)
+    elif isinstance(image_path, (list, tuple)):
+        time_parts = [get_matches_in_order(path, time_regex, reorder, defaults) for path in image_path]
+        return [format_timestamp(parts) for parts in time_parts]
+    else:
+        raise TypeError(f"`image_path` must be a string, list or tuple, got {type(image_path)}")
+    
+def get_matches_in_order(image_path : str, time_regex : str, reorder : Dict[int, int], default_values : Dict[int, str]) -> str:
+    if not isinstance(image_path, str):
+        raise TypeError(f"`image_path` must be a string, got {type(image_path)}")
+    if not isinstance(time_regex, str):
+        raise TypeError(f"`time_regex` must be a string, got {type(time_regex)}")
+    if not isinstance(reorder, dict):
+        raise TypeError(f"`reorder` must be a dictionary, got {type(reorder)}")
+    if not isinstance(default_values, dict):
+        raise TypeError(f"`default_values` must be a dictionary, got {type(default_values)}")
+    image_path = os.path.basename(image_path)
+    matches = re.search(time_regex, image_path)
+    if matches is None:
+        raise ValueError(f"No matches found in '{image_path}' using '{time_regex}'")
+    matches = matches.groups()
+    matches = {i : matches[i] for i in reorder.values()}
+    for i, default in default_values.items():
+        if i not in matches:
+            matches[i] = default
+    matches = [matches[i] for i in range(len(matches))]
+    return matches
+
+def format_timestamp(time_parts : str, time_format : str = "{}-{}-{} {}:{}:{}") -> str:
+    return time_format.format(*time_parts)
+
+def convert_timeformat(time_format : str) -> str:
+    # Pattern to find and replace date components
+    patterns = {
+        r'%Y{2,4}': '%Y',  # Year
+        r'%m{1,2}': '%m',  # Month
+        r'%d{1,2}': '%d',  # Day
+        r'%H{1,2}': '%H',  # Hour
+        r'%M{1,2}': '%M',  # Minute
+        r'%S{1,2}': '%S'   # Second
+    }
+    
+    # Perform the replacements
+    for pattern, replacement in patterns.items():
+        time_format = re.sub(pattern, replacement, time_format)
+    
+    return time_format
 
 #----------------------------------------------------------------------------
 # Embedding base class
@@ -214,8 +284,11 @@ class HFEmbedding(Embedding):
                  filenames: str = None,
                  model_path: str = None,
                  device: str = "cpu",
-                 from_pretrained:str = 'facebook/dinov2-base') -> None:
-        super().__init__(filenames, model_path, device)
+                 from_pretrained:str = 'facebook/dinov2-base',
+                 *args,
+                 **kwargs
+                 ) -> None:
+        super().__init__(filenames, model_path, device, *args, **kwargs)
 
         # Dataset definition
         self.dataset = HFDataset(filenames=self.filenames)
@@ -270,8 +343,8 @@ class HFEmbedding(Embedding):
         self.filenames = self.dataset.filenames
 
 class HierarchicalEmbedding(Embedding):
-    def __init__(self, model_path : str, filenames: list = None, device: str = "cpu", from_pretrained : Any=None) -> None:
-        super().__init__(filenames, device)
+    def __init__(self, model_path : str, filenames: list = None, device: str = "cpu", from_pretrained : Any=None, *args, **kwargs) -> None:
+        super().__init__(filenames, device, *args, **kwargs)
 
         # Load model
         self.dtype = torch.bfloat16
@@ -336,7 +409,7 @@ def computeAccuracy(labels, predictions):
     accuracy = TruePositives/len(predictions)
     return accuracy, TruePositives
 
-def get_crop_features(crop_path: str, meta_folder : str, meta_filenames: list):
+def get_crop_features(crop_path: str, meta_folder : str, meta_filenames: list, time_format: Optional[str]=None):
     """Get crop date and location in the original non-cropped image.
 
     Parameters
@@ -360,14 +433,12 @@ def get_crop_features(crop_path: str, meta_folder : str, meta_filenames: list):
     crop_path_split = Path(crop_path).name.split("_")
 
     # Default values
-    image_date = datetime.strptime("202401010000", "%Y%m%d%H%M%S")
+    image_date = datetime.strptime("20240101000000", "%Y%m%d%H%M%S")
     image_number = 0
     
-    # find date with regex
-    pattern = r'(?<!\d)\d{14}(?!\d)'
-    matches = re.findall(pattern, crop_path)
-    if len(matches)==1:
-        image_date = datetime.strptime(matches[0], "%Y%m%d%H%M%S")
+    if not time_format is None:
+        time_stamp = get_timestamp(crop_path, time_format)
+        image_date = datetime.strptime(time_stamp, STANDARD_TIME_FORMAT)
 
     if "IMAGENAME" in crop_path_split:
         image_name = crop_path_split[crop_path_split.index("IMAGENAME")+1]
@@ -405,16 +476,14 @@ def get_crop_features(crop_path: str, meta_folder : str, meta_filenames: list):
         center = [x1 + (x2-x1)/2, y1 + (y2-y1)/2]
     return {"number": image_number, "date": image_date, "center": center}
 
-def get_crop_features_from_boxes(crop_path: str, crop_bbox: list):
+def get_crop_features_from_boxes(crop_path: str, crop_bbox: list, time_format: Optional[str]=None):
     # Default values
-    image_date = datetime.strptime("202401010000", "%Y%m%d%H%M%S")
+    image_date = datetime.strptime("20240101000000", "%Y%m%d%H%M%S")
     image_number = 0
     
-    # find date with regex
-    pattern = r'(?<!\d)\d{14}(?!\d)'
-    matches = re.findall(pattern, crop_path)
-    if len(matches)==1:
-        image_date = datetime.strptime(matches[0], "%Y%m%d%H%M%S")
+    if not time_format is None:
+        time_stamp = get_timestamp(crop_path, time_format)
+        image_date = datetime.strptime(time_stamp, STANDARD_TIME_FORMAT)
 
     x1, y1, x2, y2 = crop_bbox
     center = [x1 + (x2-x1)/2, y1 + (y2-y1)/2]
@@ -440,6 +509,7 @@ class Clustering:
                  boxes: list = None,
                  num_classes: int = None,
                  device: str = "cpu",
+                 time_format: str = "%Y-%m-%d_%H-%M-%S",
                  do_dim_reduc: bool = False,
                  add_features: bool = False) -> None:
         # Path of the file where the embeddings are stored
@@ -457,6 +527,9 @@ class Clustering:
 
         # Store the filenames, for reproduction and saving purpose
         self.filenames = None
+
+        # Store the time format
+        self.time_format = time_format
 
         # Load the embeddings
         self.load_embs()
@@ -522,12 +595,13 @@ class Clustering:
         self.features = [get_crop_features(
                 crop_path=f,
                 meta_folder=self.meta_folder,
-                meta_filenames=self.meta_filenames
+                meta_filenames=self.meta_filenames,
+                time_format=self.time_format
             ) for f in tqdm(self.filenames)]
     
     def load_features_from_boxes(self):
         self.features = [get_crop_features_from_boxes(
-            crop_path=f, crop_bbox=b) for (f,b) in zip(self.filenames, self.boxes)]
+            crop_path=f, crop_bbox=b, time_format=self.time_format) for (f,b) in zip(self.filenames, self.boxes)]
     
     def add_features(self) -> None:
         """Add features to the embeddings.
@@ -960,6 +1034,7 @@ def run_embed(
     filenames: list = None,
     from_pretrained: str = None,
     device: str = "cpu",
+    time_format: str = "%YYYY-%mm-%dd_%HH-%MM-%SS"
     ) -> str:
     """Run the embedding workflow.
     """
@@ -969,7 +1044,7 @@ def run_embed(
         os.makedirs(out_folder, exist_ok=True)
 
     # Create an unique output filename with the date and time, plus the method name
-    out_file = datetime.now().strftime("%Y%m%d-%H%M%S_") + method.__name__ + "_embs.pkl"
+    out_file = datetime.now().strftime(f"{time_format}_") + method.__name__ + "_embs.pkl"
     out_file = os.path.join(out_folder, out_file)
 
     # Compute the embeddings
@@ -978,6 +1053,7 @@ def run_embed(
         model_path = model_path,
         device = device,
         from_pretrained = from_pretrained,
+        time_format = time_format
     )
     emb.compute()
     emb.save(out_file)
@@ -1001,6 +1077,7 @@ def run_cluster(
     device: str = "cpu",
     threshold: float = None,
     chunk_size: int = 10000,
+    time_format: str = "%YYYY-%mm-%dd_%HH-%MM-%SS"
     ) -> str:
     """Run the clustering workflow.
     """
@@ -1011,7 +1088,7 @@ def run_cluster(
 
     # Create an unique output filename with the date and time, plus the method name
     ext = ".pkl" if save_embs else ".csv"
-    out_file = datetime.now().strftime("%Y%m%d-%H%M%S_") + method.__name__ + "_clusters" + ext
+    out_file = datetime.now().strftime(f"{time_format}_") + method.__name__ + "_clusters" + ext
     out_file = os.path.join(out_folder, out_file)
 
     # Compute the clusters, evaluate them if possible
@@ -1020,7 +1097,9 @@ def run_cluster(
         boxes = boxes,
         meta_folder = meta_folder,
         num_classes = num_classes,
-        device = device)
+        device = device,
+        time_format = time_format
+    )
     
     cluster.compute_chunk(chunk_size) if threshold is None else cluster.compute_chunk(chunk_size=chunk_size, threshold=threshold)
     if num_classes is not None and cluster.labels is not None:
@@ -1047,6 +1126,7 @@ def main(args : Dict):
     out_folder = args.get("out_folder", None)
     if out_folder is None:
         raise ValueError("Output folder must be specified.")
+    time_format = args.get("time_format", "%YYYY-%mm-%dd_%HH-%MM-%SS")
     device = args.get("device", None)
     if device is None:
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -1079,6 +1159,7 @@ def main(args : Dict):
         model_path = model_path,
         device = device,
         from_pretrained = from_pretrained,
+        time_format = time_format
     )
 
     # Compute the clusters
@@ -1092,7 +1173,8 @@ def main(args : Dict):
         save_embs = save_embs,
         save_labels = save_labels,
         device = device,
-        threshold = threshold
+        threshold = threshold,
+        time_format = time_format
     )
 
     # If not precised, the output folder will have the same name as the input folder with an additional '_clustered' suffix.
@@ -1119,6 +1201,8 @@ if __name__=='__main__':
         help='Path(s), director(y/ies) or glob(s) to such. If it is a .txt file, then it should contain lines corresponding to the former. Outputs will be saved in the output directory.')
     parser.add_argument("-o", "--out_folder", type=str, required=True,
         help="(Optional) Output folder for the clustered images.")
+    parser.add_argument('--time_format', type=str, default="%YYYY-%mm-%dd_%HH-%MM-%SS", required=False,
+        help='Format for the time stamp in image file names.')
     parser.add_argument("-d", "--device", type=str,
         help="(Optional) Device used to run the embedding model. Defaults to cuda:0 if available, else 'cpu'.")
     parser.add_argument("-e", "--embed", type=str, default="dino",
