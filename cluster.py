@@ -78,57 +78,55 @@ def get_images(input_path_dir_globs : Union[str, List[str]]) -> List[str]:
     return images
 
 # Time stamp extraction
-def get_timestamp(image_path : Union[str, Iterable[str]], time_format : str) -> str:
-    if not isinstance(image_path, str) and not all(map(lambda p : isinstance(p, str), image_path)):
-        raise TypeError(f"`image_path` must be a string, got {type(image_path)}")
-    if not isinstance(time_format, str):
-        raise TypeError(f"`time_format` must be a string, got {type(time_format)}")
-    if not isinstance(time_format, str):
-        raise TypeError(f"`time_format` must be a string, got {type(time_format)}")
+# def get_timestamp(image_path : Union[str, Iterable[str]], time_format : str) -> str:
+#     if not isinstance(image_path, str) and not all(map(lambda p : isinstance(p, str), image_path)):
+#         raise TypeError(f"`image_path` must be a string, got {type(image_path)}")
+#     if not isinstance(time_format, str):
+#         raise TypeError(f"`time_format` must be a string, got {type(time_format)}")
 
-    time_regex_parts = re.findall(r'(%([a-zA-Z])\2+)', time_format)
-    time_regex_parts = {s : len(part) - 1 for part, s in time_regex_parts}
-    time_regex_sep = re.split("|".join("%" + s * l for s, l in time_regex_parts.items()), time_format)
-    time_regex_format = "{}".join(time_regex_sep)
-    time_regex = time_regex_format.format(*[f'(\d{{{p}}})' for p in time_regex_parts.values()])
+#     time_regex_parts = re.findall(r'(%([a-zA-Z])\2+)', time_format)
+#     time_regex_parts = {s : len(part) - 1 for part, s in time_regex_parts}
+#     time_regex_sep = re.split("|".join("%" + s * l for s, l in time_regex_parts.items()), time_format)
+#     time_regex_format = "{}".join(time_regex_sep)
+#     time_regex = time_regex_format.format(*[f'(\d{{{p}}})' for p in time_regex_parts.values()])
 
-    predefined_order = {"Y" : 0, "m" : 1, "d" : 2, "H" : 3, "M" : 4, "S" : 5}
-    defaults = {"Y" : "0000", "m" : "00", "d" : "00", "H" : "00", "M" : "00", "S" : "00"}
-    defaults = {predefined_order[k] : v for k, v in defaults.items()}
-    reorder = {i : predefined_order[k] for i, k in enumerate(time_regex_parts.keys())}
+#     predefined_order = {"Y" : 0, "m" : 1, "d" : 2, "H" : 3, "M" : 4, "S" : 5}
+#     defaults = {"Y" : "0000", "m" : "00", "d" : "00", "H" : "00", "M" : "00", "S" : "00"}
+#     defaults = {predefined_order[k] : v for k, v in defaults.items()}
+#     reorder = {i : predefined_order[k] for i, k in enumerate(time_regex_parts.keys())}
 
-    if isinstance(image_path, str):
-        time_parts = get_matches_in_order(image_path, time_regex, reorder, defaults)
-        return format_timestamp(time_parts)
-    elif isinstance(image_path, (list, tuple)):
-        time_parts = [get_matches_in_order(path, time_regex, reorder, defaults) for path in image_path]
-        return [format_timestamp(parts) for parts in time_parts]
-    else:
-        raise TypeError(f"`image_path` must be a string, list or tuple, got {type(image_path)}")
+#     if isinstance(image_path, str):
+#         time_parts = get_matches_in_order(image_path, time_regex, reorder, defaults)
+#         return format_timestamp(time_parts)
+#     elif isinstance(image_path, (list, tuple)):
+#         time_parts = [get_matches_in_order(path, time_regex, reorder, defaults) for path in image_path]
+#         return [format_timestamp(parts) for parts in time_parts]
+#     else:
+#         raise TypeError(f"`image_path` must be a string, list or tuple, got {type(image_path)}")
     
-def get_matches_in_order(image_path : str, time_regex : str, reorder : Dict[int, int], default_values : Dict[int, str]) -> str:
-    if not isinstance(image_path, str):
-        raise TypeError(f"`image_path` must be a string, got {type(image_path)}")
-    if not isinstance(time_regex, str):
-        raise TypeError(f"`time_regex` must be a string, got {type(time_regex)}")
-    if not isinstance(reorder, dict):
-        raise TypeError(f"`reorder` must be a dictionary, got {type(reorder)}")
-    if not isinstance(default_values, dict):
-        raise TypeError(f"`default_values` must be a dictionary, got {type(default_values)}")
-    image_path = os.path.basename(image_path)
-    matches = re.search(time_regex, image_path)
-    if matches is None:
-        raise ValueError(f"No matches found in '{image_path}' using '{time_regex}'")
-    matches = matches.groups()
-    matches = {i : matches[i] for i in reorder.values()}
-    for i, default in default_values.items():
-        if i not in matches:
-            matches[i] = default
-    matches = [matches[i] for i in range(len(matches))]
-    return matches
+# def get_matches_in_order(image_path : str, time_regex : str, reorder : Dict[int, int], default_values : Dict[int, str]) -> str:
+#     if not isinstance(image_path, str):
+#         raise TypeError(f"`image_path` must be a string, got {type(image_path)}")
+#     if not isinstance(time_regex, str):
+#         raise TypeError(f"`time_regex` must be a string, got {type(time_regex)}")
+#     if not isinstance(reorder, dict):
+#         raise TypeError(f"`reorder` must be a dictionary, got {type(reorder)}")
+#     if not isinstance(default_values, dict):
+#         raise TypeError(f"`default_values` must be a dictionary, got {type(default_values)}")
+#     image_path = os.path.basename(image_path)
+#     matches = re.search(time_regex, image_path)
+#     if matches is None:
+#         raise ValueError(f"No matches found in '{image_path}' using '{time_regex}'")
+#     matches = matches.groups()
+#     matches = {i : matches[i] for i in reorder.values()}
+#     for i, default in default_values.items():
+#         if i not in matches:
+#             matches[i] = default
+#     matches = [matches[i] for i in range(len(matches))]
+#     return matches
 
-def format_timestamp(time_parts : str, time_format : str = "{}-{}-{} {}:{}:{}") -> str:
-    return time_format.format(*time_parts)
+# def format_timestamp(time_parts : str, time_format : str = "{}-{}-{} {}:{}:{}") -> str:
+#     return time_format.format(*time_parts)
 
 def convert_timeformat(time_format : str) -> str:
     # Pattern to find and replace date components
@@ -146,6 +144,69 @@ def convert_timeformat(time_format : str) -> str:
         time_format = re.sub(pattern, replacement, time_format)
     
     return time_format
+
+def create_regex_from_format(format_string):
+    # Define the mapping from format directive to regex pattern
+    format_mappings = {
+        "%Y": r"(?P<Y>\d{4})",
+        "%m": r"(?P<m>\d{2})",
+        "%d": r"(?P<d>\d{2})",
+        "%H": r"(?P<H>\d{2})",
+        "%M": r"(?P<M>\d{2})",
+        "%S": r"(?P<S>\d{2})"
+    }
+    
+    # Escape characters that are not format directives
+    escaped_format = re.escape(format_string)
+    
+    # Replace format directives with corresponding regex patterns
+    for directive, pattern in format_mappings.items():
+        escaped_format = escaped_format.replace(re.escape(directive), pattern)
+    
+    return escaped_format
+
+def parse_time_string(time_string, format_string):
+    # Create regex pattern from format string
+    format_string = convert_timeformat(format_string)
+    regex_pattern = create_regex_from_format(format_string)
+    
+    # Match the time string with the regex pattern
+    match = re.search(regex_pattern, time_string)
+    if match:
+        time_elements = match.groupdict()
+        print(time_elements, match.group(0))
+        try:
+            return datetime.strptime(match.group(0), format_string)
+        except ValueError as e:
+            raise ValueError(f"Time string '{time_string}' does not match format '{format_string}'")
+    
+    raise ValueError(f"Time string '{time_string}' does not match the pattern derived from format '{format_string}'")
+
+def search_and_convert_timestamp(regex_pattern, image_path, from_format, to_format):
+    match = re.search(regex_pattern, image_path)
+    if match:
+        original_datetime = datetime.strptime(match.group(0), from_format)
+        target_datetime_str = original_datetime.strftime(to_format)
+        return target_datetime_str
+    else:
+        raise ValueError(f"Time string '{image_path}' does not match the pattern derived from format '{from_format}'")
+
+# Time stamp extraction
+def get_timestamp(image_path : Union[str, Iterable[str]], time_format : str, default_time_format : str = "%Y-%m-%d %H:%M:%S") -> str:
+    if not isinstance(image_path, str) and not all(map(lambda p : isinstance(p, str), image_path)):
+        raise TypeError(f"`image_path` must be a string, got {type(image_path)}")
+    if not isinstance(time_format, str):
+        raise TypeError(f"`time_format` must be a string, got {type(time_format)}")
+
+    time_format =convert_timeformat(time_format)
+    regex_pattern = create_regex_from_format(time_format)
+
+    if isinstance(image_path, str):
+        return search_and_convert_timestamp(regex_pattern, image_path, time_format, default_time_format)
+    elif isinstance(image_path, (list, tuple)):
+        return [search_and_convert_timestamp(regex_pattern, p, time_format, default_time_format) for p in image_path]
+    else:
+        raise TypeError(f"`image_path` must be a string, list or tuple, got {type(image_path)}")
 
 #----------------------------------------------------------------------------
 # Embedding base class
@@ -1044,7 +1105,7 @@ def run_embed(
         os.makedirs(out_folder, exist_ok=True)
 
     # Create an unique output filename with the date and time, plus the method name
-    out_file = datetime.now().strftime(f"{time_format}_") + method.__name__ + "_embs.pkl"
+    out_file = datetime.now().strftime(f"{convert_timeformat(time_format)}_") + method.__name__ + "_embs.pkl"
     out_file = os.path.join(out_folder, out_file)
 
     # Compute the embeddings
@@ -1088,7 +1149,7 @@ def run_cluster(
 
     # Create an unique output filename with the date and time, plus the method name
     ext = ".pkl" if save_embs else ".csv"
-    out_file = datetime.now().strftime(f"{time_format}_") + method.__name__ + "_clusters" + ext
+    out_file = datetime.now().strftime(f"{convert_timeformat(time_format)}_") + method.__name__ + "_clusters" + ext
     out_file = os.path.join(out_folder, out_file)
 
     # Compute the clusters, evaluate them if possible
