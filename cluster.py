@@ -145,7 +145,7 @@ def convert_timeformat(time_format : str) -> str:
     
     return time_format
 
-def create_regex_from_format(format_string):
+def create_regex_from_format(format_string : str):
     # Define the mapping from format directive to regex pattern
     format_mappings = {
         "%Y": r"(?P<Y>\d{4})",
@@ -165,7 +165,7 @@ def create_regex_from_format(format_string):
     
     return escaped_format
 
-def parse_time_string(time_string, format_string):
+def parse_time_string(time_string : str, format_string : str):
     # Create regex pattern from format string
     format_string = convert_timeformat(format_string)
     regex_pattern = create_regex_from_format(format_string)
@@ -182,7 +182,7 @@ def parse_time_string(time_string, format_string):
     
     raise ValueError(f"Time string '{time_string}' does not match the pattern derived from format '{format_string}'")
 
-def search_and_convert_timestamp(regex_pattern, image_path, from_format, to_format):
+def search_and_convert_timestamp(image_path : str, regex_pattern : Union[str, re.Pattern], from_format : str, to_format : str) -> str:
     match = re.search(regex_pattern, image_path)
     if match:
         original_datetime = datetime.strptime(match.group(0), from_format)
@@ -198,13 +198,13 @@ def get_timestamp(image_path : Union[str, Iterable[str]], time_format : str, def
     if not isinstance(time_format, str):
         raise TypeError(f"`time_format` must be a string, got {type(time_format)}")
 
-    time_format =convert_timeformat(time_format)
+    time_format = convert_timeformat(time_format)
     regex_pattern = create_regex_from_format(time_format)
 
     if isinstance(image_path, str):
-        return search_and_convert_timestamp(regex_pattern, image_path, time_format, default_time_format)
+        return search_and_convert_timestamp(image_path, regex_pattern, time_format, default_time_format)
     elif isinstance(image_path, (list, tuple)):
-        return [search_and_convert_timestamp(regex_pattern, p, time_format, default_time_format) for p in image_path]
+        return [search_and_convert_timestamp(p, regex_pattern, time_format, default_time_format) for p in image_path]
     else:
         raise TypeError(f"`image_path` must be a string, list or tuple, got {type(image_path)}")
 
