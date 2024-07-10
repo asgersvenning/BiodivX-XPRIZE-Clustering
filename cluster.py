@@ -767,19 +767,19 @@ class Clustering:
         assert chunk_size > 0, f"Chunk size too small {chunk_size}"
 
         self.embs_all = self.embs.copy()
-        self.features_all = self.features.copy()
+        if self.features is not None: self.features_all = self.features.copy()
         self.clusters_all = np.zeros(len(self.embs), dtype=np.int32)
 
         max_cluster_idx = 0
         for i in range(0,len(self.embs_all), chunk_size):
             self.embs = self.embs_all[i:i+chunk_size]
-            self.features = self.features_all[i:i+chunk_size]
+            if self.features is not None: self.features = self.features_all[i:i+chunk_size]
             self.compute(**kwargs)
             self.clusters_all[i:i+chunk_size] = self.clusters + max_cluster_idx
             max_cluster_idx = self.clusters_all.max() + 1
 
         self.embs = self.embs_all
-        self.features = self.features_all
+        if self.features is not None: self.features = self.features_all
         self.clusters = self.clusters_all
     
 def load_clusters(clusters_file: str):
@@ -1266,7 +1266,7 @@ if __name__=='__main__':
         help='Format for the time stamp in image file names.')
     parser.add_argument("-d", "--device", type=str,
         help="(Optional) Device used to run the embedding model. Defaults to cuda:0 if available, else 'cpu'.")
-    parser.add_argument("-e", "--embed", type=str, default="dino",
+    parser.add_argument("-e", "--embed", type=str, default="hierarchical",
         help="(Optional) Name of the embedding method. Valid names: {}".format(VALID_NAMES_EMBED.keys()))
     parser.add_argument("-fp", "--from_pretrained", type=str, default='facebook/dinov2-base',
         help="(Optional) HuggingFace model for embedding computation. Only required if 'embed=dino'.")
